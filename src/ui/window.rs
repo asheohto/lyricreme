@@ -33,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config::AppConfig;
-use crate::player::PlayerState;
+use crate::player::{LyricsStatus, PlayerState};
 use crate::ui::renderer::{OverlayRenderer, RenderLine};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -98,6 +98,61 @@ impl SpringOscillator {
     }
 }
 
+pub struct OpacityFader {
+    pub current_opacity: f32,
+    pub target_opacity: f32,
+    pub fade_from: f32,
+    pub fade_start: Option<Instant>,
+    pub duration_s: f32,
+}
+
+impl OpacityFader {
+    pub fn new() -> Self {
+        Self {
+            current_opacity: 1.0,
+            target_opacity: 1.0,
+            fade_from: 1.0,
+            fade_start: None,
+            duration_s: 0.35,
+        }
+    }
+
+    pub fn set_target(&mut self, target: f32) -> bool {
+        if (target - self.target_opacity).abs() > 0.001 {
+            self.fade_from = self.current_opacity;
+            self.target_opacity = target;
+            self.fade_start = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Evaluates current opacity and returns true if still actively fading.
+    pub fn update(&mut self) -> bool {
+        if let Some(start) = self.fade_start {
+            let elapsed = start.elapsed().as_secs_f32();
+            if elapsed >= self.duration_s {
+                self.current_opacity = self.target_opacity;
+                self.fade_start = None;
+                false
+            } else {
+                let p = (elapsed / self.duration_s).clamp(0.0, 1.0);
+                // Hermite smoothstep ease-in-out: 3p^2 - 2p^3
+                let smooth = p * p * (3.0 - 2.0 * p);
+                self.current_opacity = self.fade_from + (self.target_opacity - self.fade_from) * smooth;
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn is_fading(&self) -> bool {
+        self.fade_start.is_some()
+    }
+}
+
 pub struct AnimationState {
     pub current_line1: String,
     pub current_line2: String,
@@ -105,6 +160,7 @@ pub struct AnimationState {
     pub old_line2: String,
     pub transition_start: Option<Instant>,
     pub spring: SpringOscillator,
+    pub fader: OpacityFader,
 }
 
 impl AnimationState {
@@ -116,6 +172,7 @@ impl AnimationState {
             old_line2: String::new(),
             transition_start: None,
             spring: SpringOscillator::new(),
+            fader: OpacityFader::new(),
         }
     }
 
@@ -131,11 +188,12 @@ impl AnimationState {
     }
 
     pub fn is_animating(&self) -> bool {
-        if let Some(start) = self.transition_start {
+        let spring_active = if let Some(start) = self.transition_start {
             start.elapsed().as_secs_f32() < self.spring.duration_s
         } else {
             false
-        }
+        };
+        spring_active || self.fader.is_fading()
     }
 }
 
@@ -145,6 +203,8 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
     const L1_Y: f32 = 6.0;
     const L2_Y: f32 = 48.0;
 
+    let master_opacity = anim.fader.current_opacity.clamp(0.0, 1.0);
+
     let elapsed = anim.transition_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(999.0);
 
     // If transition finished, render settled resting lines (stationary, rock-solid, crisp)
@@ -153,7 +213,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
                 y: L1_Y,
-                opacity: 1.0,
+                opacity: 1.0 * master_opacity,
                 is_active: true,
             });
         }
@@ -161,7 +221,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
                 y: L2_Y,
-                opacity: 0.70,
+                opacity: 0.70 * master_opacity,
                 is_active: false,
             });
         }
@@ -179,7 +239,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
                 y: L1_Y,
-                opacity: 1.0,
+                opacity: 1.0 * master_opacity,
                 is_active: true,
             });
         }
@@ -189,7 +249,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.old_line1.clone(),
                 y: L1_Y - 18.0 * spring_val,
-                opacity: fade_out,
+                opacity: fade_out * master_opacity,
                 is_active: true,
             });
         }
@@ -199,7 +259,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
                 y: L1_Y + spring_disp,
-                opacity: fade_in,
+                opacity: fade_in * master_opacity,
                 is_active: true,
             });
         }
@@ -211,7 +271,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
                 y: L2_Y,
-                opacity: 0.70,
+                opacity: 0.70 * master_opacity,
                 is_active: false,
             });
         }
@@ -221,7 +281,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.old_line2.clone(),
                 y: L2_Y - 10.0 * spring_val,
-                opacity: fade_out * 0.70,
+                opacity: fade_out * 0.70 * master_opacity,
                 is_active: false,
             });
         }
@@ -231,7 +291,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
                 y: L2_Y + spring_disp2,
-                opacity: fade_in * 0.70,
+                opacity: fade_in * 0.70 * master_opacity,
                 is_active: false,
             });
         }
@@ -323,12 +383,17 @@ impl OverlayWindow {
             ).map_err(|e| format!("Renderer init failed: {}", e))?;
 
             let mut anim = AnimationState::new();
-            let (l1, l2) = {
+            let (l1, l2, init_status) = {
                 let state = player_state.lock().unwrap();
-                state.get_display_lyrics(config.time_offset_ms)
+                let (first1, first2) = state.get_display_lyrics(config.time_offset_ms);
+                (first1, first2, state.lyrics_status.clone())
             };
             anim.current_line1 = l1;
             anim.current_line2 = l2;
+            if init_status == LyricsStatus::NotFound {
+                anim.fader.current_opacity = 0.10;
+                anim.fader.target_opacity = 0.10;
+            }
 
             let context = Box::new(WindowContext {
                 config,
@@ -377,13 +442,22 @@ impl OverlayWindow {
 
                 let is_animating = if !GLOBAL_CONTEXT.is_null() {
                     let ctx = &mut *GLOBAL_CONTEXT;
-                    let (line1, line2) = {
+                    let (line1, line2, status) = {
                         let state = ctx.player_state.lock().unwrap();
-                        state.get_display_lyrics(ctx.config.time_offset_ms)
+                        let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms);
+                        (l1, l2, state.lyrics_status.clone())
                     };
 
+                    let target_changed = match status {
+                        LyricsStatus::NotFound => ctx.anim.fader.set_target(0.10),
+                        LyricsStatus::Loaded => ctx.anim.fader.set_target(1.0),
+                        LyricsStatus::Idle => ctx.anim.fader.set_target(1.0),
+                        LyricsStatus::Loading => false,
+                    };
+
+                    let fader_animating = ctx.anim.fader.update();
                     let changed = ctx.anim.update(line1, line2);
-                    if changed {
+                    if changed || target_changed || fader_animating {
                         needs_render = true;
                     }
 
@@ -452,11 +526,19 @@ unsafe extern "system" fn window_proc(
             // Backup update during modal window dragging
             if wparam.0 == TIMER_UPDATE_ID && !GLOBAL_CONTEXT.is_null() {
                 let ctx = &mut *GLOBAL_CONTEXT;
-                let (line1, line2) = {
+                let (line1, line2, status) = {
                     let state = ctx.player_state.lock().unwrap();
-                    state.get_display_lyrics(ctx.config.time_offset_ms)
+                    let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms);
+                    (l1, l2, state.lyrics_status.clone())
                 };
 
+                match status {
+                    LyricsStatus::NotFound => { ctx.anim.fader.set_target(0.10); }
+                    LyricsStatus::Loaded => { ctx.anim.fader.set_target(1.0); }
+                    LyricsStatus::Idle => { ctx.anim.fader.set_target(1.0); }
+                    LyricsStatus::Loading => {}
+                }
+                ctx.anim.fader.update();
                 ctx.anim.update(line1, line2);
 
                 let lines = build_render_lines(&ctx.anim);
@@ -695,5 +777,60 @@ mod tests {
 
         let lines = build_render_lines(&anim);
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_opacity_fader() {
+        let mut fader = OpacityFader::new();
+        assert_eq!(fader.current_opacity, 1.0);
+        assert!(!fader.is_fading());
+
+        // Start fade to 10%
+        let changed = fader.set_target(0.10);
+        assert!(changed);
+        assert!(fader.is_fading());
+
+        // Setting same target again should return false (no-op)
+        assert!(!fader.set_target(0.10));
+
+        // Advance past duration
+        fader.fade_start = Some(Instant::now() - Duration::from_millis(400));
+        let still_fading = fader.update();
+        assert!(!still_fading);
+        assert!(!fader.is_fading());
+        assert!((fader.current_opacity - 0.10).abs() < 0.001);
+
+        // Fade back up to 100%
+        let changed_up = fader.set_target(1.0);
+        assert!(changed_up);
+        assert!(fader.is_fading());
+
+        // Advance past duration
+        fader.fade_start = Some(Instant::now() - Duration::from_millis(400));
+        let still_fading_up = fader.update();
+        assert!(!still_fading_up);
+        assert!(!fader.is_fading());
+        assert!((fader.current_opacity - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_render_lines_fader_opacity() {
+        let mut anim = AnimationState::new();
+        anim.current_line1 = "Track Title".into();
+        anim.current_line2 = "(No synced lyrics found on LRCLIB)".into();
+
+        // Settled at 10%
+        anim.fader.current_opacity = 0.10;
+        let lines_10 = build_render_lines(&anim);
+        assert_eq!(lines_10.len(), 2);
+        assert!((lines_10[0].opacity - 0.10).abs() < 0.001);
+        assert!((lines_10[1].opacity - 0.07).abs() < 0.001);
+
+        // Settled at 100%
+        anim.fader.current_opacity = 1.0;
+        let lines_100 = build_render_lines(&anim);
+        assert_eq!(lines_100.len(), 2);
+        assert!((lines_100[0].opacity - 1.0).abs() < 0.001);
+        assert!((lines_100[1].opacity - 0.70).abs() < 0.001);
     }
 }
