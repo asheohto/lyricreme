@@ -31,6 +31,7 @@ pub struct RenderLine {
     pub y: f32,
     pub opacity: f32,
     pub is_active: bool,
+    pub glow_intensity: f32,
 }
 
 pub struct OverlayRenderer {
@@ -50,6 +51,7 @@ pub struct OverlayRenderer {
     brush_drag_bg: ID2D1SolidColorBrush,
     brush_drag_border: ID2D1SolidColorBrush,
     brush_glow: ID2D1SolidColorBrush,
+    brush_turn_glow: ID2D1SolidColorBrush,
     brush_active: ID2D1SolidColorBrush,
     brush_next: ID2D1SolidColorBrush,
     text_format_line1: IDWriteTextFormat,
@@ -149,6 +151,12 @@ impl OverlayRenderer {
             None,
         )?;
 
+        // Turn highlight luminous bloom brush (electric cyan / celestial azure aura)
+        let brush_turn_glow = render_target.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 0.38, g: 0.82, b: 1.0, a: 1.0 },
+            None,
+        )?;
+
         // Active primary lyric (Line 1)
         let brush_active = render_target.CreateSolidColorBrush(
             &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
@@ -175,6 +183,7 @@ impl OverlayRenderer {
             brush_drag_bg,
             brush_drag_border,
             brush_glow,
+            brush_turn_glow,
             brush_active,
             brush_next,
             text_format_line1,
@@ -226,7 +235,7 @@ impl OverlayRenderer {
             self.render_target.DrawRoundedRectangle(&guide_rect, &self.brush_drag_border, 1.5, None);
         }
 
-        // Render each active line with 8-directional drop-shadow for crisp legibility
+        // Render each active line
         for line in lines {
             if line.text.is_empty() || line.opacity <= 0.005 {
                 continue;
@@ -241,7 +250,58 @@ impl OverlayRenderer {
             let height = if line.is_active { 42.0 } else { 32.0 };
             let alpha = line.opacity.clamp(0.0, 1.0);
 
-            // 8-directional outline/shadow to ensure text is clear across light and dark backgrounds
+            // 1. Turn glow bloom: multi-layered luminous cyan aura when it's the line's turn
+            if line.glow_intensity > 0.02 {
+                let glow_alpha = (alpha * line.glow_intensity).clamp(0.0, 1.0);
+
+                // Outer soft luminous bloom (radius 3.5px)
+                self.brush_turn_glow.SetOpacity(0.32 * glow_alpha);
+                let outer_offsets = [
+                    (-3.5, 0.0), (3.5, 0.0), (0.0, -3.5), (0.0, 3.5),
+                    (-2.5, -2.5), (2.5, -2.5), (-2.5, 2.5), (2.5, 2.5),
+                ];
+                for (dx, dy) in outer_offsets {
+                    let r = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                        left: dx,
+                        top: line.y + dy,
+                        right: self.width as f32 + dx,
+                        bottom: line.y + height + dy,
+                    };
+                    self.render_target.DrawText(
+                        &text_wide,
+                        format,
+                        &r,
+                        &self.brush_turn_glow,
+                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+
+                // Inner vibrant radiant bloom (radius 1.8px)
+                self.brush_turn_glow.SetOpacity(0.58 * glow_alpha);
+                let inner_offsets = [
+                    (-1.8, 0.0), (1.8, 0.0), (0.0, -1.8), (0.0, 1.8),
+                    (-1.3, -1.3), (1.3, -1.3), (-1.3, 1.3), (1.3, 1.3),
+                ];
+                for (dx, dy) in inner_offsets {
+                    let r = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                        left: dx,
+                        top: line.y + dy,
+                        right: self.width as f32 + dx,
+                        bottom: line.y + height + dy,
+                    };
+                    self.render_target.DrawText(
+                        &text_wide,
+                        format,
+                        &r,
+                        &self.brush_turn_glow,
+                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+
+            // 2. 8-directional shadow / outline for crisp contrast against any background
             self.brush_glow.SetOpacity(0.90 * alpha);
             let shadow_offsets = [
                 (-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5),
@@ -266,7 +326,7 @@ impl OverlayRenderer {
                 );
             }
 
-            // Foreground text
+            // 3. Foreground text
             let fg_brush = if line.is_active {
                 self.brush_active.SetOpacity(1.0 * alpha);
                 &self.brush_active
@@ -346,6 +406,7 @@ impl OverlayRenderer {
                 y: 6.0,
                 opacity: 1.0,
                 is_active: true,
+                glow_intensity: 0.4,
             });
         }
         if !line2.is_empty() {
@@ -354,6 +415,7 @@ impl OverlayRenderer {
                 y: 48.0,
                 opacity: 0.70,
                 is_active: false,
+                glow_intensity: 0.0,
             });
         }
         self.render_lines(hwnd, &lines, is_locked);

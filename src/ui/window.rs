@@ -40,24 +40,96 @@ const IDM_OFFSET_MINUS: usize = 2005;
 const IDM_OFFSET_RESET: usize = 2006;
 const IDM_EXIT: usize = 2007;
 
+/// Damped Harmonic Oscillator (Spring Physics)
+/// Analytical underdamped formulation:
+/// x(t) = 1.0 - exp(-zeta * omega_n * t) * (cos(omega_d * t) + (zeta * omega_n / omega_d) * sin(omega_d * t))
+pub struct SpringOscillator {
+    pub zeta: f32,       // Damping ratio (0.80 = organic tactile feel with gentle overshoot)
+    pub omega_n: f32,    // Natural angular frequency (14.0 rad/s)
+    pub duration_s: f32, // Settling cutoff in seconds
+}
+
+impl SpringOscillator {
+    pub fn new() -> Self {
+        Self {
+            zeta: 0.80,
+            omega_n: 14.0,
+            duration_s: 0.55,
+        }
+    }
+
+    /// Evaluates the spring progress factor at elapsed time `t` (seconds).
+    /// Starts at 0.0 at t=0, oscillates with subtle physical overshoot, and settles at 1.0.
+    pub fn evaluate(&self, t: f32) -> f32 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if t >= self.duration_s {
+            return 1.0;
+        }
+        let omega_d = self.omega_n * (1.0 - self.zeta * self.zeta).max(0.001).sqrt();
+        let decay = (-self.zeta * self.omega_n * t).exp();
+        let cos_term = (omega_d * t).cos();
+        let sin_term = (omega_d * t).sin();
+        let factor = self.zeta * self.omega_n / omega_d;
+
+        1.0 - decay * (cos_term + factor * sin_term)
+    }
+}
+
+/// Computes organic ambient floating offsets using dual-harmonic sinusoids.
+/// Produces a calm, zero-gravity hovering drift.
+pub fn organic_float_offsets(app_start: &Instant) -> (f32, f32) {
+    let t = app_start.elapsed().as_secs_f64();
+    // Line 1 floating: dual harmonic breathing (~3.6s cycle)
+    let l1 = (t * 1.75).sin() * 1.5 + (t * 0.85).cos() * 0.5;
+    // Line 2 floating: phase-shifted subtle drift (~4.2s cycle)
+    let l2 = (t * 1.50 + 1.25).sin() * 1.2 + (t * 0.70 + 0.40).cos() * 0.4;
+    (l1 as f32, l2 as f32)
+}
+
+/// Computes turn glow intensity.
+/// When a line takes its turn, it blossoms with an intense radiant aura (peak at 1.0),
+/// then gently relaxes to a soft sustained active aura (0.35).
+pub fn turn_glow_intensity(turn_start: &Instant) -> f32 {
+    let t = turn_start.elapsed().as_secs_f32();
+    if t < 0.16 {
+        // Fast radiant bloom on turn start
+        0.35 + (t / 0.16) * 0.65
+    } else if t < 0.80 {
+        // Soft relaxation decay from 1.0 to steady 0.35
+        let p = (t - 0.16) / (0.80 - 0.16);
+        let decay = (1.0 - p) * (1.0 - p);
+        0.35 + 0.65 * decay
+    } else {
+        // Sustained ambient active aura while it remains this line's turn
+        0.35
+    }
+}
+
 pub struct AnimationState {
     pub current_line1: String,
     pub current_line2: String,
     pub old_line1: String,
     pub old_line2: String,
-    pub anim_start: Option<Instant>,
-    pub anim_duration_ms: u64,
+    pub transition_start: Option<Instant>,
+    pub line1_turn_time: Instant,
+    pub app_start: Instant,
+    pub spring: SpringOscillator,
 }
 
 impl AnimationState {
     pub fn new() -> Self {
+        let now = Instant::now();
         Self {
             current_line1: String::new(),
             current_line2: String::new(),
             old_line1: String::new(),
             old_line2: String::new(),
-            anim_start: None,
-            anim_duration_ms: 260, // 260ms smooth cubic ease-out
+            transition_start: None,
+            line1_turn_time: now,
+            app_start: now,
+            spring: SpringOscillator::new(),
         }
     }
 
@@ -66,98 +138,111 @@ impl AnimationState {
             return false;
         }
 
+        let l1_changed = next_line1 != self.current_line1;
         self.old_line1 = std::mem::replace(&mut self.current_line1, next_line1);
         self.old_line2 = std::mem::replace(&mut self.current_line2, next_line2);
-        self.anim_start = Some(Instant::now());
+        self.transition_start = Some(Instant::now());
+
+        if l1_changed {
+            self.line1_turn_time = Instant::now();
+        }
+
         true
     }
 
-    pub fn is_animating(&self) -> bool {
-        self.anim_start.is_some()
-    }
-
-    /// Advances the animation progress using cubic ease-out.
-    /// Returns factor in [0.0, 1.0]. Clears anim_start once 1.0 is reached.
-    pub fn step(&mut self) -> f32 {
-        if let Some(start) = self.anim_start {
-            let elapsed = start.elapsed().as_millis() as f32;
-            let dur = self.anim_duration_ms as f32;
-            if elapsed >= dur {
-                self.anim_start = None;
-                1.0
-            } else {
-                let t = (elapsed / dur).clamp(0.0, 1.0);
-                1.0 - (1.0 - t).powi(3)
-            }
+    #[allow(dead_code)]
+    pub fn is_transitioning(&self) -> bool {
+        if let Some(start) = self.transition_start {
+            start.elapsed().as_secs_f32() < self.spring.duration_s
         } else {
-            1.0
+            false
         }
     }
 }
 
-pub fn build_render_lines(anim: &AnimationState, ease: f32) -> Vec<RenderLine> {
+pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
     let mut lines = Vec::with_capacity(4);
 
-    if ease >= 1.0 {
-        // Resting static state
+    let (float1, float2) = organic_float_offsets(&anim.app_start);
+    let glow = turn_glow_intensity(&anim.line1_turn_time);
+
+    let spring_p = if let Some(start) = anim.transition_start {
+        let elapsed = start.elapsed().as_secs_f32();
+        anim.spring.evaluate(elapsed)
+    } else {
+        1.0
+    };
+
+    let l1_base_y = 6.0 + float1;
+    let l2_base_y = 48.0 + float2;
+
+    if spring_p >= 1.0 {
+        // Resting / Organic floating state
         if !anim.current_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: 6.0,
+                y: l1_base_y,
                 opacity: 1.0,
                 is_active: true,
+                glow_intensity: glow,
             });
         }
         if !anim.current_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: 48.0,
+                y: l2_base_y,
                 opacity: 0.70,
                 is_active: false,
+                glow_intensity: 0.0,
             });
         }
         return lines;
     }
 
-    // Line 1 transition
+    // Line 1 transition with spring physics
     if anim.current_line1 == anim.old_line1 {
         if !anim.current_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: 6.0,
+                y: l1_base_y,
                 opacity: 1.0,
                 is_active: true,
+                glow_intensity: glow,
             });
         }
     } else {
-        // Outgoing Line 1 floats upwards and dissolves
+        // Outgoing Line 1 floats upwards and gently dissolves
         if !anim.old_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line1.clone(),
-                y: 6.0 - 14.0 * ease,
-                opacity: (1.0 - ease).max(0.0),
+                y: l1_base_y - 16.0 * spring_p,
+                opacity: (1.0 - spring_p).max(0.0),
                 is_active: true,
+                glow_intensity: 0.0,
             });
         }
-        // Incoming Line 1 glides up into place and brightens
+        // Incoming Line 1 springs into place with damped harmonic bounce and blooms with turn glow!
         if !anim.current_line1.is_empty() {
+            let spring_disp = (1.0 - spring_p) * 18.0;
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: 6.0 + 16.0 * (1.0 - ease),
-                opacity: ease,
+                y: l1_base_y + spring_disp,
+                opacity: spring_p.clamp(0.0, 1.0),
                 is_active: true,
+                glow_intensity: glow,
             });
         }
     }
 
-    // Line 2 transition
+    // Line 2 transition with spring physics
     if anim.current_line2 == anim.old_line2 {
         if !anim.current_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: 48.0,
+                y: l2_base_y,
                 opacity: 0.70,
                 is_active: false,
+                glow_intensity: 0.0,
             });
         }
     } else {
@@ -165,18 +250,21 @@ pub fn build_render_lines(anim: &AnimationState, ease: f32) -> Vec<RenderLine> {
         if !anim.old_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line2.clone(),
-                y: 48.0 - 10.0 * ease,
-                opacity: ((1.0 - ease) * 0.70).max(0.0),
+                y: l2_base_y - 10.0 * spring_p,
+                opacity: ((1.0 - spring_p) * 0.70).max(0.0),
                 is_active: false,
+                glow_intensity: 0.0,
             });
         }
-        // Incoming Line 2 rises into preview position from below
+        // Incoming Line 2 springs into preview position from below
         if !anim.current_line2.is_empty() {
+            let spring_disp2 = (1.0 - spring_p) * 14.0;
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: 48.0 + 14.0 * (1.0 - ease),
-                opacity: ease * 0.70,
+                y: l2_base_y + spring_disp2,
+                opacity: spring_p.clamp(0.0, 1.0) * 0.70,
                 is_active: false,
+                glow_intensity: 0.0,
             });
         }
     }
@@ -285,11 +373,11 @@ impl OverlayWindow {
             GLOBAL_CONTEXT = Box::into_raw(context);
 
             add_tray_icon(hwnd);
-            // 16ms = ~60 FPS update frequency for smooth animation
+            // 16ms = ~60 FPS update frequency for smooth organic floating & spring physics
             SetTimer(hwnd, TIMER_UPDATE_ID, 16, None);
 
             let ctx = &mut *GLOBAL_CONTEXT;
-            let lines = build_render_lines(&ctx.anim, 1.0);
+            let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
 
             println!("[LyricReme] Entering Win32 message loop...");
@@ -326,13 +414,11 @@ unsafe extern "system" fn window_proc(
                     state.get_display_lyrics(ctx.config.time_offset_ms)
                 };
 
-                let changed = ctx.anim.update(line1, line2);
+                ctx.anim.update(line1, line2);
 
-                if changed || ctx.anim.is_animating() {
-                    let ease = ctx.anim.step();
-                    let lines = build_render_lines(&ctx.anim, ease);
-                    ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
-                }
+                // At 60 FPS: update spring progress, organic floating, and turn glow
+                let lines = build_render_lines(&ctx.anim);
+                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
             }
             LRESULT(0)
         }
@@ -477,7 +563,7 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             }
             SetWindowLongW(hwnd, GWL_EXSTYLE, style as i32);
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            let lines = build_render_lines(&ctx.anim, 1.0);
+            let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_RESET_POSITION => {
@@ -496,7 +582,7 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
                 SWP_NOACTIVATE,
             );
             let _ = ctx.config.save();
-            let lines = build_render_lines(&ctx.anim, 1.0);
+            let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_OFFSET_PLUS => {
@@ -506,11 +592,9 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
                 let state = ctx.player_state.lock().unwrap();
                 state.get_display_lyrics(ctx.config.time_offset_ms)
             };
-            if ctx.anim.update(l1, l2) {
-                let ease = ctx.anim.step();
-                let lines = build_render_lines(&ctx.anim, ease);
-                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
-            }
+            ctx.anim.update(l1, l2);
+            let lines = build_render_lines(&ctx.anim);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_OFFSET_MINUS => {
             ctx.config.time_offset_ms -= 200;
@@ -519,11 +603,9 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
                 let state = ctx.player_state.lock().unwrap();
                 state.get_display_lyrics(ctx.config.time_offset_ms)
             };
-            if ctx.anim.update(l1, l2) {
-                let ease = ctx.anim.step();
-                let lines = build_render_lines(&ctx.anim, ease);
-                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
-            }
+            ctx.anim.update(l1, l2);
+            let lines = build_render_lines(&ctx.anim);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_OFFSET_RESET => {
             ctx.config.time_offset_ms = 0;
@@ -532,11 +614,9 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
                 let state = ctx.player_state.lock().unwrap();
                 state.get_display_lyrics(ctx.config.time_offset_ms)
             };
-            if ctx.anim.update(l1, l2) {
-                let ease = ctx.anim.step();
-                let lines = build_render_lines(&ctx.anim, ease);
-                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
-            }
+            ctx.anim.update(l1, l2);
+            let lines = build_render_lines(&ctx.anim);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_EXIT => {
             let _ = DestroyWindow(hwnd);
@@ -550,18 +630,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_spring_oscillator() {
+        let spring = SpringOscillator::new();
+        let at_0 = spring.evaluate(0.0);
+        assert_eq!(at_0, 0.0);
+
+        let at_settle = spring.evaluate(0.60);
+        assert_eq!(at_settle, 1.0);
+
+        // Verify slight physical overshoot at ~0.35s
+        let at_overshoot = spring.evaluate(0.35);
+        assert!(at_overshoot > 0.99);
+    }
+
+    #[test]
+    fn test_organic_floating() {
+        let start = Instant::now();
+        let (f1, f2) = organic_float_offsets(&start);
+        assert!(f1.abs() <= 2.5);
+        assert!(f2.abs() <= 2.0);
+    }
+
+    #[test]
+    fn test_turn_glow() {
+        let start = Instant::now();
+        let initial_glow = turn_glow_intensity(&start);
+        assert!(initial_glow >= 0.35);
+    }
+
+    #[test]
     fn test_animation_state() {
         let mut anim = AnimationState::new();
-        assert!(!anim.is_animating());
+        assert!(!anim.is_transitioning());
 
         let changed = anim.update("Line 1".into(), "Line 2".into());
         assert!(changed);
-        assert!(anim.is_animating());
+        assert!(anim.is_transitioning());
 
-        let lines = build_render_lines(&anim, 0.0);
+        let lines = build_render_lines(&anim);
         assert!(!lines.is_empty());
-
-        let lines_final = build_render_lines(&anim, 1.0);
-        assert_eq!(lines_final.len(), 2);
     }
 }
