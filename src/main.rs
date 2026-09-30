@@ -23,6 +23,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  LyricReme - YouTube Music Desktop Lyrics Overlay ");
     println!("==================================================");
 
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("LyricReme panicked: {}\n", info);
+        eprintln!("{}", msg);
+        if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+            let path = std::path::PathBuf::from(appdata).join("LyricReme").join("crash.log");
+            let _ = std::fs::write(path, &msg);
+        }
+        let _ = std::fs::write("crash.log", &msg);
+    }));
+
     // Initialize COM for DirectWrite & Direct2D
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

@@ -133,22 +133,38 @@ pub fn clean_metadata(text: &str) -> String {
     let mut clean = text.trim().to_string();
 
     let suffixes_to_remove = [
-        "(Official Music Video)",
-        "(Official Video)",
-        "(Official Audio)",
-        "(Lyrics)",
-        "(Lyric Video)",
-        "[Official Music Video]",
-        "[Official Video]",
-        "[MV]",
-        "(MV)",
-        "[Audio]",
-        "(Audio)",
+        "(official music video)",
+        "(official video)",
+        "(official audio)",
+        "(lyrics)",
+        "(lyric video)",
+        "[official music video]",
+        "[official video]",
+        "[mv]",
+        "(mv)",
+        "[audio]",
+        "(audio)",
     ];
 
-    for s in &suffixes_to_remove {
-        if let Some(pos) = clean.to_lowercase().find(&s.to_lowercase()) {
-            clean.replace_range(pos..pos + s.len(), "");
+    for pat in &suffixes_to_remove {
+        let pat_len = pat.len();
+        loop {
+            let found_range = clean.char_indices().find_map(|(start, _)| {
+                let tail = &clean[start..];
+                if tail.len() >= pat_len && clean.is_char_boundary(start + pat_len) {
+                    let candidate = &tail[..pat_len];
+                    if candidate.eq_ignore_ascii_case(pat) {
+                        return Some(start..start + pat_len);
+                    }
+                }
+                None
+            });
+
+            if let Some(range) = found_range {
+                clean.replace_range(range, "");
+            } else {
+                break;
+            }
         }
     }
 
@@ -182,6 +198,14 @@ mod tests {
         assert_eq!(
             clean_metadata("Song Name [MV]"),
             "Song Name"
+        );
+        assert_eq!(
+            clean_metadata("Harpy Hare - Yaelokre & Keath Ósk [Official Video]"),
+            "Harpy Hare - Yaelokre & Keath Ósk"
+        );
+        assert_eq!(
+            clean_metadata("Jolene but it's gay (Lyrics)"),
+            "Jolene but it's gay"
         );
     }
 }
