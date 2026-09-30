@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
@@ -13,13 +14,13 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongW,
-    PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
+    DispatchMessageW, GetCursorPos, GetSystemMetrics, GetWindowLongW,
+    PeekMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongW, SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage,
     GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
-    MF_UNCHECKED, MSG, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    MF_UNCHECKED, MSG, PM_REMOVE, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
     SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_EXITSIZEMOVE, WM_LBUTTONDOWN, WM_NCLBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
+    WM_DESTROY, WM_EXITSIZEMOVE, WM_LBUTTONDOWN, WM_NCLBUTTONDOWN, WM_QUIT, WM_RBUTTONUP, WM_TIMER,
     WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
@@ -88,32 +89,12 @@ pub fn organic_float_offsets(app_start: &Instant) -> (f32, f32) {
     (l1 as f32, l2 as f32)
 }
 
-/// Computes turn glow intensity.
-/// When a line takes its turn, it blossoms with an intense radiant aura (peak at 1.0),
-/// then gently relaxes to a soft sustained active aura (0.35).
-pub fn turn_glow_intensity(turn_start: &Instant) -> f32 {
-    let t = turn_start.elapsed().as_secs_f32();
-    if t < 0.16 {
-        // Fast radiant bloom on turn start
-        0.35 + (t / 0.16) * 0.65
-    } else if t < 0.80 {
-        // Soft relaxation decay from 1.0 to steady 0.35
-        let p = (t - 0.16) / (0.80 - 0.16);
-        let decay = (1.0 - p) * (1.0 - p);
-        0.35 + 0.65 * decay
-    } else {
-        // Sustained ambient active aura while it remains this line's turn
-        0.35
-    }
-}
-
 pub struct AnimationState {
     pub current_line1: String,
     pub current_line2: String,
     pub old_line1: String,
     pub old_line2: String,
     pub transition_start: Option<Instant>,
-    pub line1_turn_time: Instant,
     pub app_start: Instant,
     pub spring: SpringOscillator,
 }
@@ -127,7 +108,6 @@ impl AnimationState {
             old_line1: String::new(),
             old_line2: String::new(),
             transition_start: None,
-            line1_turn_time: now,
             app_start: now,
             spring: SpringOscillator::new(),
         }
@@ -138,15 +118,9 @@ impl AnimationState {
             return false;
         }
 
-        let l1_changed = next_line1 != self.current_line1;
         self.old_line1 = std::mem::replace(&mut self.current_line1, next_line1);
         self.old_line2 = std::mem::replace(&mut self.current_line2, next_line2);
         self.transition_start = Some(Instant::now());
-
-        if l1_changed {
-            self.line1_turn_time = Instant::now();
-        }
-
         true
     }
 
@@ -164,7 +138,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
     let mut lines = Vec::with_capacity(4);
 
     let (float1, float2) = organic_float_offsets(&anim.app_start);
-    let glow = turn_glow_intensity(&anim.line1_turn_time);
 
     let spring_p = if let Some(start) = anim.transition_start {
         let elapsed = start.elapsed().as_secs_f32();
@@ -184,7 +157,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l1_base_y,
                 opacity: 1.0,
                 is_active: true,
-                glow_intensity: glow,
             });
         }
         if !anim.current_line2.is_empty() {
@@ -193,7 +165,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l2_base_y,
                 opacity: 0.70,
                 is_active: false,
-                glow_intensity: 0.0,
             });
         }
         return lines;
@@ -207,7 +178,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l1_base_y,
                 opacity: 1.0,
                 is_active: true,
-                glow_intensity: glow,
             });
         }
     } else {
@@ -218,10 +188,9 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l1_base_y - 16.0 * spring_p,
                 opacity: (1.0 - spring_p).max(0.0),
                 is_active: true,
-                glow_intensity: 0.0,
             });
         }
-        // Incoming Line 1 springs into place with damped harmonic bounce and blooms with turn glow!
+        // Incoming Line 1 springs into place with damped harmonic bounce
         if !anim.current_line1.is_empty() {
             let spring_disp = (1.0 - spring_p) * 18.0;
             lines.push(RenderLine {
@@ -229,7 +198,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l1_base_y + spring_disp,
                 opacity: spring_p.clamp(0.0, 1.0),
                 is_active: true,
-                glow_intensity: glow,
             });
         }
     }
@@ -242,7 +210,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l2_base_y,
                 opacity: 0.70,
                 is_active: false,
-                glow_intensity: 0.0,
             });
         }
     } else {
@@ -253,7 +220,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l2_base_y - 10.0 * spring_p,
                 opacity: ((1.0 - spring_p) * 0.70).max(0.0),
                 is_active: false,
-                glow_intensity: 0.0,
             });
         }
         // Incoming Line 2 springs into preview position from below
@@ -264,7 +230,6 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
                 y: l2_base_y + spring_disp2,
                 opacity: spring_p.clamp(0.0, 1.0) * 0.70,
                 is_active: false,
-                glow_intensity: 0.0,
             });
         }
     }
@@ -373,20 +338,52 @@ impl OverlayWindow {
             GLOBAL_CONTEXT = Box::into_raw(context);
 
             add_tray_icon(hwnd);
-            // 16ms = ~60 FPS update frequency for smooth organic floating & spring physics
+            // Backup timer for modal dragging loops
             SetTimer(hwnd, TIMER_UPDATE_ID, 16, None);
 
             let ctx = &mut *GLOBAL_CONTEXT;
             let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
 
-            println!("[LyricReme] Entering Win32 message loop...");
+            println!("[LyricReme] Entering native refresh rate presentation loop (DwmFlush sync)...");
             let mut msg: MSG = zeroed();
-            while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            let mut is_running = true;
+
+            while is_running {
+                // Drain all pending Win32 messages (mouse events, tray menu, close)
+                while PeekMessageW(&mut msg, HWND(null_mut()), 0, 0, PM_REMOVE).as_bool() {
+                    if msg.message == WM_QUIT {
+                        is_running = false;
+                        break;
+                    }
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+
+                if !is_running {
+                    break;
+                }
+
+                if !GLOBAL_CONTEXT.is_null() {
+                    let ctx = &mut *GLOBAL_CONTEXT;
+                    let (line1, line2) = {
+                        let state = ctx.player_state.lock().unwrap();
+                        state.get_display_lyrics(ctx.config.time_offset_ms)
+                    };
+
+                    ctx.anim.update(line1, line2);
+
+                    let lines = build_render_lines(&ctx.anim);
+                    ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+                }
+
+                // Synchronize with the native screen refresh rate (VBLANK via Desktop Window Manager)
+                let res = DwmFlush();
+                if res.is_err() {
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
             }
-            println!("[LyricReme] Exited message loop.");
+            println!("[LyricReme] Exited presentation loop.");
 
             remove_tray_icon(hwnd);
             if !GLOBAL_CONTEXT.is_null() {
@@ -407,6 +404,7 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match msg {
         WM_TIMER => {
+            // Backup update during modal window dragging
             if wparam.0 == TIMER_UPDATE_ID && !GLOBAL_CONTEXT.is_null() {
                 let ctx = &mut *GLOBAL_CONTEXT;
                 let (line1, line2) = {
@@ -416,7 +414,6 @@ unsafe extern "system" fn window_proc(
 
                 ctx.anim.update(line1, line2);
 
-                // At 60 FPS: update spring progress, organic floating, and turn glow
                 let lines = build_render_lines(&ctx.anim);
                 ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
             }
@@ -638,7 +635,6 @@ mod tests {
         let at_settle = spring.evaluate(0.60);
         assert_eq!(at_settle, 1.0);
 
-        // Verify slight physical overshoot at ~0.35s
         let at_overshoot = spring.evaluate(0.35);
         assert!(at_overshoot > 0.99);
     }
@@ -649,13 +645,6 @@ mod tests {
         let (f1, f2) = organic_float_offsets(&start);
         assert!(f1.abs() <= 2.5);
         assert!(f2.abs() <= 2.0);
-    }
-
-    #[test]
-    fn test_turn_glow() {
-        let start = Instant::now();
-        let initial_glow = turn_glow_intensity(&start);
-        assert!(initial_glow >= 0.35);
     }
 
     #[test]
