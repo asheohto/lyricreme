@@ -1,12 +1,19 @@
 use std::mem::zeroed;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(u_period: u32) -> u32;
+    fn timeEndPeriod(u_period: u32) -> u32;
+}
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Dwm::DwmFlush;
-use windows::Win32::Graphics::Gdi::HBRUSH;
+use windows::Win32::Graphics::Gdi::{
+    GetDC, GetDeviceCaps, ReleaseDC, HBRUSH, VREFRESH,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows::Win32::UI::Shell::{
@@ -41,21 +48,34 @@ const IDM_OFFSET_MINUS: usize = 2005;
 const IDM_OFFSET_RESET: usize = 2006;
 const IDM_EXIT: usize = 2007;
 
+pub fn get_monitor_refresh_rate() -> u32 {
+    unsafe {
+        let screen_dc = GetDC(HWND(null_mut()));
+        let hz = GetDeviceCaps(screen_dc, VREFRESH);
+        ReleaseDC(HWND(null_mut()), screen_dc);
+        if hz >= 30 && hz <= 500 {
+            hz as u32
+        } else {
+            60
+        }
+    }
+}
+
 /// Damped Harmonic Oscillator (Spring Physics)
 /// Analytical underdamped formulation:
 /// x(t) = 1.0 - exp(-zeta * omega_n * t) * (cos(omega_d * t) + (zeta * omega_n / omega_d) * sin(omega_d * t))
 pub struct SpringOscillator {
-    pub zeta: f32,       // Damping ratio (0.80 = organic tactile feel with gentle overshoot)
-    pub omega_n: f32,    // Natural angular frequency (14.0 rad/s)
-    pub duration_s: f32, // Settling cutoff in seconds
+    pub zeta: f32,       // Damping ratio (0.75 for crisp, tactile overshoot)
+    pub omega_n: f32,    // Natural angular frequency (12.5 rad/s)
+    pub duration_s: f32, // Settling duration (0.48s)
 }
 
 impl SpringOscillator {
     pub fn new() -> Self {
         Self {
-            zeta: 0.80,
-            omega_n: 14.0,
-            duration_s: 0.55,
+            zeta: 0.75,
+            omega_n: 12.5,
+            duration_s: 0.48,
         }
     }
 
@@ -138,19 +158,13 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
     let mut lines = Vec::with_capacity(4);
 
     let (float1, float2) = organic_float_offsets(&anim.app_start);
-
-    let spring_p = if let Some(start) = anim.transition_start {
-        let elapsed = start.elapsed().as_secs_f32();
-        anim.spring.evaluate(elapsed)
-    } else {
-        1.0
-    };
-
     let l1_base_y = 6.0 + float1;
     let l2_base_y = 48.0 + float2;
 
-    if spring_p >= 1.0 {
-        // Resting / Organic floating state
+    let elapsed = anim.transition_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(999.0);
+
+    // If transition finished, render settled resting lines with ambient hover
+    if elapsed >= anim.spring.duration_s {
         if !anim.current_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
@@ -170,6 +184,11 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         return lines;
     }
 
+    let spring_val = anim.spring.evaluate(elapsed);
+    // Smooth monotonic opacity fades (no oscillation in opacity)
+    let fade_in = (elapsed / 0.22).min(1.0);
+    let fade_out = (1.0 - elapsed / 0.20).max(0.0);
+
     // Line 1 transition with spring physics
     if anim.current_line1 == anim.old_line1 {
         if !anim.current_line1.is_empty() {
@@ -185,18 +204,18 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.old_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line1.clone(),
-                y: l1_base_y - 16.0 * spring_p,
-                opacity: (1.0 - spring_p).max(0.0),
+                y: l1_base_y - 18.0 * spring_val,
+                opacity: fade_out,
                 is_active: true,
             });
         }
-        // Incoming Line 1 springs into place with damped harmonic bounce
+        // Incoming Line 1 springs into place with tactile damped overshoot
         if !anim.current_line1.is_empty() {
-            let spring_disp = (1.0 - spring_p) * 18.0;
+            let spring_disp = (1.0 - spring_val) * 20.0;
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
                 y: l1_base_y + spring_disp,
-                opacity: spring_p.clamp(0.0, 1.0),
+                opacity: fade_in,
                 is_active: true,
             });
         }
@@ -217,18 +236,18 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.old_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line2.clone(),
-                y: l2_base_y - 10.0 * spring_p,
-                opacity: ((1.0 - spring_p) * 0.70).max(0.0),
+                y: l2_base_y - 10.0 * spring_val,
+                opacity: fade_out * 0.70,
                 is_active: false,
             });
         }
         // Incoming Line 2 springs into preview position from below
         if !anim.current_line2.is_empty() {
-            let spring_disp2 = (1.0 - spring_p) * 14.0;
+            let spring_disp2 = (1.0 - spring_val) * 14.0;
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
                 y: l2_base_y + spring_disp2,
-                opacity: spring_p.clamp(0.0, 1.0) * 0.70,
+                opacity: fade_in * 0.70,
                 is_active: false,
             });
         }
@@ -338,19 +357,26 @@ impl OverlayWindow {
             GLOBAL_CONTEXT = Box::into_raw(context);
 
             add_tray_icon(hwnd);
-            // Backup timer for modal dragging loops
+            // Backup timer for modal dragging
             SetTimer(hwnd, TIMER_UPDATE_ID, 16, None);
 
             let ctx = &mut *GLOBAL_CONTEXT;
             let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
 
-            println!("[LyricReme] Entering native refresh rate presentation loop (DwmFlush sync)...");
+            let refresh_rate = get_monitor_refresh_rate();
+            println!("[LyricReme] Detected native screen refresh rate: {} Hz", refresh_rate);
+            let frame_target = Duration::from_secs_f64(1.0 / refresh_rate as f64);
+
+            timeBeginPeriod(1);
+
+            println!("[LyricReme] Entering high-refresh presentation loop ({} FPS)...", refresh_rate);
             let mut msg: MSG = zeroed();
             let mut is_running = true;
+            let mut next_frame = Instant::now();
 
             while is_running {
-                // Drain all pending Win32 messages (mouse events, tray menu, close)
+                // Drain any pending Win32 messages (mouse events, tray menu, close) with zero latency
                 while PeekMessageW(&mut msg, HWND(null_mut()), 0, 0, PM_REMOVE).as_bool() {
                     if msg.message == WM_QUIT {
                         is_running = false;
@@ -377,14 +403,24 @@ impl OverlayWindow {
                     ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
                 }
 
-                // Synchronize with the native screen refresh rate (VBLANK via Desktop Window Manager)
-                let res = DwmFlush();
-                if res.is_err() {
-                    std::thread::sleep(std::time::Duration::from_millis(8));
+                // Sub-millisecond precision pacing locked to exact display refresh rate
+                next_frame += frame_target;
+                let now = Instant::now();
+                if next_frame > now {
+                    let sleep_dur = next_frame - now;
+                    if sleep_dur > Duration::from_millis(2) {
+                        std::thread::sleep(sleep_dur - Duration::from_millis(1));
+                    }
+                    while Instant::now() < next_frame {
+                        std::hint::spin_loop();
+                    }
+                } else if now - next_frame > frame_target {
+                    next_frame = now;
                 }
             }
             println!("[LyricReme] Exited presentation loop.");
 
+            timeEndPeriod(1);
             remove_tray_icon(hwnd);
             if !GLOBAL_CONTEXT.is_null() {
                 drop(Box::from_raw(GLOBAL_CONTEXT));
@@ -635,7 +671,7 @@ mod tests {
         let at_settle = spring.evaluate(0.60);
         assert_eq!(at_settle, 1.0);
 
-        let at_overshoot = spring.evaluate(0.35);
+        let at_overshoot = spring.evaluate(0.30);
         assert!(at_overshoot > 0.99);
     }
 
