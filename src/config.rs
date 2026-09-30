@@ -22,7 +22,7 @@ impl Default for AppConfig {
             window_x: None,
             window_y: 20,
             window_width: 1100,
-            window_height: 80,
+            window_height: 90,
             font_family: "Segoe UI".to_string(),
             font_size_line1: 24.0,
             font_size_line2: 16.0,
@@ -38,7 +38,11 @@ impl AppConfig {
         if let Some(path) = config_file_path() {
             if path.exists() {
                 if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
+                    if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
+                        if cfg.window_height < 90 {
+                            cfg.window_height = 90;
+                            let _ = cfg.save();
+                        }
                         return cfg;
                     }
                 }

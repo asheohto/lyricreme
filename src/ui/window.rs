@@ -1,6 +1,7 @@
 use std::mem::zeroed;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -25,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::config::AppConfig;
 use crate::player::PlayerState;
-use crate::ui::renderer::OverlayRenderer;
+use crate::ui::renderer::{OverlayRenderer, RenderLine};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
 const TIMER_UPDATE_ID: usize = 1001;
@@ -39,13 +40,156 @@ const IDM_OFFSET_MINUS: usize = 2005;
 const IDM_OFFSET_RESET: usize = 2006;
 const IDM_EXIT: usize = 2007;
 
+pub struct AnimationState {
+    pub current_line1: String,
+    pub current_line2: String,
+    pub old_line1: String,
+    pub old_line2: String,
+    pub anim_start: Option<Instant>,
+    pub anim_duration_ms: u64,
+}
+
+impl AnimationState {
+    pub fn new() -> Self {
+        Self {
+            current_line1: String::new(),
+            current_line2: String::new(),
+            old_line1: String::new(),
+            old_line2: String::new(),
+            anim_start: None,
+            anim_duration_ms: 260, // 260ms smooth cubic ease-out
+        }
+    }
+
+    pub fn update(&mut self, next_line1: String, next_line2: String) -> bool {
+        if next_line1 == self.current_line1 && next_line2 == self.current_line2 {
+            return false;
+        }
+
+        self.old_line1 = std::mem::replace(&mut self.current_line1, next_line1);
+        self.old_line2 = std::mem::replace(&mut self.current_line2, next_line2);
+        self.anim_start = Some(Instant::now());
+        true
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.anim_start.is_some()
+    }
+
+    /// Advances the animation progress using cubic ease-out.
+    /// Returns factor in [0.0, 1.0]. Clears anim_start once 1.0 is reached.
+    pub fn step(&mut self) -> f32 {
+        if let Some(start) = self.anim_start {
+            let elapsed = start.elapsed().as_millis() as f32;
+            let dur = self.anim_duration_ms as f32;
+            if elapsed >= dur {
+                self.anim_start = None;
+                1.0
+            } else {
+                let t = (elapsed / dur).clamp(0.0, 1.0);
+                1.0 - (1.0 - t).powi(3)
+            }
+        } else {
+            1.0
+        }
+    }
+}
+
+pub fn build_render_lines(anim: &AnimationState, ease: f32) -> Vec<RenderLine> {
+    let mut lines = Vec::with_capacity(4);
+
+    if ease >= 1.0 {
+        // Resting static state
+        if !anim.current_line1.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line1.clone(),
+                y: 6.0,
+                opacity: 1.0,
+                is_active: true,
+            });
+        }
+        if !anim.current_line2.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line2.clone(),
+                y: 48.0,
+                opacity: 0.70,
+                is_active: false,
+            });
+        }
+        return lines;
+    }
+
+    // Line 1 transition
+    if anim.current_line1 == anim.old_line1 {
+        if !anim.current_line1.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line1.clone(),
+                y: 6.0,
+                opacity: 1.0,
+                is_active: true,
+            });
+        }
+    } else {
+        // Outgoing Line 1 floats upwards and dissolves
+        if !anim.old_line1.is_empty() {
+            lines.push(RenderLine {
+                text: anim.old_line1.clone(),
+                y: 6.0 - 14.0 * ease,
+                opacity: (1.0 - ease).max(0.0),
+                is_active: true,
+            });
+        }
+        // Incoming Line 1 glides up into place and brightens
+        if !anim.current_line1.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line1.clone(),
+                y: 6.0 + 16.0 * (1.0 - ease),
+                opacity: ease,
+                is_active: true,
+            });
+        }
+    }
+
+    // Line 2 transition
+    if anim.current_line2 == anim.old_line2 {
+        if !anim.current_line2.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line2.clone(),
+                y: 48.0,
+                opacity: 0.70,
+                is_active: false,
+            });
+        }
+    } else {
+        // Outgoing Line 2 fades away smoothly
+        if !anim.old_line2.is_empty() {
+            lines.push(RenderLine {
+                text: anim.old_line2.clone(),
+                y: 48.0 - 10.0 * ease,
+                opacity: ((1.0 - ease) * 0.70).max(0.0),
+                is_active: false,
+            });
+        }
+        // Incoming Line 2 rises into preview position from below
+        if !anim.current_line2.is_empty() {
+            lines.push(RenderLine {
+                text: anim.current_line2.clone(),
+                y: 48.0 + 14.0 * (1.0 - ease),
+                opacity: ease * 0.70,
+                is_active: false,
+            });
+        }
+    }
+
+    lines
+}
+
 pub struct WindowContext {
     pub config: AppConfig,
     pub player_state: Arc<Mutex<PlayerState>>,
     pub renderer: OverlayRenderer,
     pub is_locked: bool,
-    pub last_line1: String,
-    pub last_line2: String,
+    pub anim: AnimationState,
 }
 
 static mut GLOBAL_CONTEXT: *mut WindowContext = null_mut();
@@ -114,32 +258,39 @@ impl OverlayWindow {
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
             println!("[LyricReme] Initializing Direct2D renderer...");
-            let renderer = OverlayRenderer::new(width, height, &config.font_family)
-                .map_err(|e| format!("Renderer init failed: {}", e))?;
+            let renderer = OverlayRenderer::new(
+                width,
+                height,
+                &config.font_family,
+                config.font_size_line1,
+                config.font_size_line2,
+            ).map_err(|e| format!("Renderer init failed: {}", e))?;
+
+            let mut anim = AnimationState::new();
+            let (l1, l2) = {
+                let state = player_state.lock().unwrap();
+                state.get_display_lyrics(config.time_offset_ms)
+            };
+            anim.current_line1 = l1;
+            anim.current_line2 = l2;
 
             let context = Box::new(WindowContext {
                 config,
                 player_state,
                 renderer,
                 is_locked: true,
-                last_line1: String::new(),
-                last_line2: String::new(),
+                anim,
             });
 
             GLOBAL_CONTEXT = Box::into_raw(context);
 
             add_tray_icon(hwnd);
-            SetTimer(hwnd, TIMER_UPDATE_ID, 33, None);
+            // 16ms = ~60 FPS update frequency for smooth animation
+            SetTimer(hwnd, TIMER_UPDATE_ID, 16, None);
 
             let ctx = &mut *GLOBAL_CONTEXT;
-            let (l1, l2) = {
-                let state = ctx.player_state.lock().unwrap();
-                state.get_display_lyrics(ctx.config.time_offset_ms)
-            };
-            println!("[LyricReme] Performing initial render (l1: '{}', l2: '{}')...", l1, l2);
-            ctx.renderer.render(hwnd, &l1, &l2);
-            ctx.last_line1 = l1;
-            ctx.last_line2 = l2;
+            let lines = build_render_lines(&ctx.anim, 1.0);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
 
             println!("[LyricReme] Entering Win32 message loop...");
             let mut msg: MSG = zeroed();
@@ -175,10 +326,12 @@ unsafe extern "system" fn window_proc(
                     state.get_display_lyrics(ctx.config.time_offset_ms)
                 };
 
-                if line1 != ctx.last_line1 || line2 != ctx.last_line2 {
-                    ctx.renderer.render(hwnd, &line1, &line2);
-                    ctx.last_line1 = line1;
-                    ctx.last_line2 = line2;
+                let changed = ctx.anim.update(line1, line2);
+
+                if changed || ctx.anim.is_animating() {
+                    let ease = ctx.anim.step();
+                    let lines = build_render_lines(&ctx.anim, ease);
+                    ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
                 }
             }
             LRESULT(0)
@@ -324,6 +477,8 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             }
             SetWindowLongW(hwnd, GWL_EXSTYLE, style as i32);
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let lines = build_render_lines(&ctx.anim, 1.0);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_RESET_POSITION => {
             let screen_width = GetSystemMetrics(SM_CXSCREEN);
@@ -341,18 +496,47 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
                 SWP_NOACTIVATE,
             );
             let _ = ctx.config.save();
+            let lines = build_render_lines(&ctx.anim, 1.0);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
         }
         IDM_OFFSET_PLUS => {
             ctx.config.time_offset_ms += 200;
             let _ = ctx.config.save();
+            let (l1, l2) = {
+                let state = ctx.player_state.lock().unwrap();
+                state.get_display_lyrics(ctx.config.time_offset_ms)
+            };
+            if ctx.anim.update(l1, l2) {
+                let ease = ctx.anim.step();
+                let lines = build_render_lines(&ctx.anim, ease);
+                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+            }
         }
         IDM_OFFSET_MINUS => {
             ctx.config.time_offset_ms -= 200;
             let _ = ctx.config.save();
+            let (l1, l2) = {
+                let state = ctx.player_state.lock().unwrap();
+                state.get_display_lyrics(ctx.config.time_offset_ms)
+            };
+            if ctx.anim.update(l1, l2) {
+                let ease = ctx.anim.step();
+                let lines = build_render_lines(&ctx.anim, ease);
+                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+            }
         }
         IDM_OFFSET_RESET => {
             ctx.config.time_offset_ms = 0;
             let _ = ctx.config.save();
+            let (l1, l2) = {
+                let state = ctx.player_state.lock().unwrap();
+                state.get_display_lyrics(ctx.config.time_offset_ms)
+            };
+            if ctx.anim.update(l1, l2) {
+                let ease = ctx.anim.step();
+                let lines = build_render_lines(&ctx.anim, ease);
+                ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+            }
         }
         IDM_EXIT => {
             let _ = DestroyWindow(hwnd);
@@ -366,39 +550,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_window_creation() {
-        unsafe {
-            let instance = GetModuleHandleW(None).unwrap();
-            let class_name = w!("LyricRemeTestClass");
-            let wc = WNDCLASSW {
-                lpfnWndProc: Some(window_proc),
-                hInstance: instance.into(),
-                lpszClassName: class_name,
-                hbrBackground: HBRUSH(null_mut()),
-                ..zeroed()
-            };
-            let _ = RegisterClassW(&wc);
-            let hwnd = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                class_name,
-                w!("LyricRemeTest"),
-                WS_POPUP | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE,
-                100,
-                100,
-                500,
-                80,
-                HWND(null_mut()),
-                None,
-                instance,
-                None,
-            );
-            match hwnd {
-                Ok(h) => {
-                    println!("Window created successfully: {:?}", h);
-                    let _ = DestroyWindow(h);
-                }
-                Err(e) => panic!("CreateWindowExW failed: {:?}", e),
-            }
-        }
+    fn test_animation_state() {
+        let mut anim = AnimationState::new();
+        assert!(!anim.is_animating());
+
+        let changed = anim.update("Line 1".into(), "Line 2".into());
+        assert!(changed);
+        assert!(anim.is_animating());
+
+        let lines = build_render_lines(&anim, 0.0);
+        assert!(!lines.is_empty());
+
+        let lines_final = build_render_lines(&anim, 1.0);
+        assert_eq!(lines_final.len(), 2);
     }
 }

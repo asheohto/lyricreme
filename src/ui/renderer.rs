@@ -25,6 +25,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, UpdateLayeredWindow, ULW_ALPHA,
 };
 
+#[derive(Debug, Clone)]
+pub struct RenderLine {
+    pub text: String,
+    pub y: f32,
+    pub opacity: f32,
+    pub is_active: bool,
+}
+
 pub struct OverlayRenderer {
     width: i32,
     height: i32,
@@ -39,8 +47,8 @@ pub struct OverlayRenderer {
     dwrite_factory: IDWriteFactory,
     dc_render_target: ID2D1DCRenderTarget,
     render_target: ID2D1RenderTarget,
-    brush_bg: ID2D1SolidColorBrush,
-    brush_border: ID2D1SolidColorBrush,
+    brush_drag_bg: ID2D1SolidColorBrush,
+    brush_drag_border: ID2D1SolidColorBrush,
     brush_glow: ID2D1SolidColorBrush,
     brush_active: ID2D1SolidColorBrush,
     brush_next: ID2D1SolidColorBrush,
@@ -49,7 +57,13 @@ pub struct OverlayRenderer {
 }
 
 impl OverlayRenderer {
-    pub unsafe fn new(width: i32, height: i32, font_family: &str) -> Result<Self, windows::core::Error> {
+    pub unsafe fn new(
+        width: i32,
+        height: i32,
+        font_family: &str,
+        font_size_line1: f32,
+        font_size_line2: f32,
+    ) -> Result<Self, windows::core::Error> {
         let screen_dc = GetDC(HWND(null_mut()));
         let hdc_mem = CreateCompatibleDC(screen_dc);
 
@@ -91,6 +105,7 @@ impl OverlayRenderer {
         let dc_render_target = d2d_factory.CreateDCRenderTarget(&rt_props)?;
         let render_target: ID2D1RenderTarget = dc_render_target.cast()?;
 
+        // Grayscale antialiasing is required for transparent layered windows so Direct2D writes true per-pixel alpha
         render_target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
         let font_wide: Vec<u16> = font_family.encode_utf16().chain(std::iter::once(0)).collect();
@@ -102,7 +117,7 @@ impl OverlayRenderer {
             DWRITE_FONT_WEIGHT_BOLD,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            24.0,
+            font_size_line1,
             w!("en-US"),
         )?;
         text_format_line1.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
@@ -113,35 +128,36 @@ impl OverlayRenderer {
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            16.0,
+            font_size_line2,
             w!("en-US"),
         )?;
         text_format_line2.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
 
-        // Modern translucent dark capsule background
-        let brush_bg = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.05, g: 0.06, b: 0.10, a: 0.70 },
+        // Repositioning guide brushes (only visible when unlocked for dragging)
+        let brush_drag_bg = render_target.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 0.10, g: 0.20, b: 0.40, a: 0.25 },
+            None,
+        )?;
+        let brush_drag_border = render_target.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 0.45, g: 0.70, b: 1.0, a: 0.60 },
             None,
         )?;
 
-        // Subtle borders
-        let brush_border = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.4, g: 0.5, b: 0.7, a: 0.25 },
-            None,
-        )?;
-
+        // Outline / drop shadow brush for maximum text readability without background box
         let brush_glow = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.85 },
+            &D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.90 },
             None,
         )?;
 
+        // Active primary lyric (Line 1)
         let brush_active = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.98, g: 1.0, b: 1.0, a: 1.0 },
+            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             None,
         )?;
 
+        // Upcoming preview lyric (Line 2)
         let brush_next = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.88, g: 0.92, b: 0.95, a: 0.65 },
+            &D2D1_COLOR_F { r: 0.88, g: 0.92, b: 0.96, a: 0.70 },
             None,
         )?;
 
@@ -156,8 +172,8 @@ impl OverlayRenderer {
             dwrite_factory,
             dc_render_target,
             render_target,
-            brush_bg,
-            brush_border,
+            brush_drag_bg,
+            brush_drag_border,
             brush_glow,
             brush_active,
             brush_next,
@@ -166,11 +182,11 @@ impl OverlayRenderer {
         })
     }
 
-    pub unsafe fn render(
+    pub unsafe fn render_lines(
         &mut self,
         hwnd: HWND,
-        line1: &str,
-        line2: &str,
+        lines: &[RenderLine],
+        is_locked: bool,
     ) {
         let rect = RECT {
             left: 0,
@@ -186,6 +202,7 @@ impl OverlayRenderer {
         self.render_target.BeginDraw();
         self.render_target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
+        // Completely clear target to 100% transparent (no background rectangle!)
         self.render_target.Clear(Some(&D2D1_COLOR_F {
             r: 0.0,
             g: 0.0,
@@ -193,82 +210,83 @@ impl OverlayRenderer {
             a: 0.0,
         }));
 
-        let pill_rect = D2D1_ROUNDED_RECT {
-            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                left: 8.0,
-                top: 2.0,
-                right: self.width as f32 - 8.0,
-                bottom: self.height as f32 - 2.0,
-            },
-            radiusX: 18.0,
-            radiusY: 18.0,
-        };
-        self.render_target.FillRoundedRectangle(&pill_rect, &self.brush_bg);
-        self.render_target.DrawRoundedRectangle(&pill_rect, &self.brush_border, 1.0, None);
+        // When unlocked for dragging, display a subtle helper box so user knows where to drag
+        if !is_locked {
+            let guide_rect = D2D1_ROUNDED_RECT {
+                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: 4.0,
+                    top: 2.0,
+                    right: self.width as f32 - 4.0,
+                    bottom: self.height as f32 - 2.0,
+                },
+                radiusX: 12.0,
+                radiusY: 12.0,
+            };
+            self.render_target.FillRoundedRectangle(&guide_rect, &self.brush_drag_bg);
+            self.render_target.DrawRoundedRectangle(&guide_rect, &self.brush_drag_border, 1.5, None);
+        }
 
-        let line1_wide: Vec<u16> = line1.encode_utf16().collect();
-        if !line1_wide.is_empty() {
-            for (dx, dy) in [(-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5), (0.0, 2.0)] {
-                let shadow_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                    left: dx as f32,
-                    top: 2.0 + dy as f32,
-                    right: self.width as f32 + dx as f32,
-                    bottom: 42.0 + dy as f32,
+        // Render each active line with 8-directional drop-shadow for crisp legibility
+        for line in lines {
+            if line.text.is_empty() || line.opacity <= 0.005 {
+                continue;
+            }
+
+            let text_wide: Vec<u16> = line.text.encode_utf16().collect();
+            let format = if line.is_active {
+                &self.text_format_line1
+            } else {
+                &self.text_format_line2
+            };
+            let height = if line.is_active { 42.0 } else { 32.0 };
+            let alpha = line.opacity.clamp(0.0, 1.0);
+
+            // 8-directional outline/shadow to ensure text is clear across light and dark backgrounds
+            self.brush_glow.SetOpacity(0.90 * alpha);
+            let shadow_offsets = [
+                (-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5),
+                (-1.2, -1.2), (1.2, -1.2), (-1.2, 1.2), (1.2, 1.2),
+                (0.0, 2.0),
+            ];
+
+            for (dx, dy) in shadow_offsets {
+                let s_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: dx,
+                    top: line.y + dy,
+                    right: self.width as f32 + dx,
+                    bottom: line.y + height + dy,
                 };
                 self.render_target.DrawText(
-                    &line1_wide,
-                    &self.text_format_line1,
-                    &shadow_rect,
+                    &text_wide,
+                    format,
+                    &s_rect,
                     &self.brush_glow,
                     windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
                     windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
                 );
             }
 
-            let foreground_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                left: 0.0,
-                top: 2.0,
-                right: self.width as f32,
-                bottom: 42.0,
+            // Foreground text
+            let fg_brush = if line.is_active {
+                self.brush_active.SetOpacity(1.0 * alpha);
+                &self.brush_active
+            } else {
+                self.brush_next.SetOpacity(0.70 * alpha);
+                &self.brush_next
             };
-            self.render_target.DrawText(
-                &line1_wide,
-                &self.text_format_line1,
-                &foreground_rect,
-                &self.brush_active,
-                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-            );
-        }
 
-        let line2_wide: Vec<u16> = line2.encode_utf16().collect();
-        if !line2_wide.is_empty() {
-            let shadow_rect2 = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+            let fg_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
                 left: 0.0,
-                top: 45.0 + 1.5,
+                top: line.y,
                 right: self.width as f32,
-                bottom: 75.0 + 1.5,
+                bottom: line.y + height,
             };
-            self.render_target.DrawText(
-                &line2_wide,
-                &self.text_format_line2,
-                &shadow_rect2,
-                &self.brush_glow,
-                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-            );
 
-            let foreground_rect2 = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                left: 0.0,
-                top: 45.0,
-                right: self.width as f32,
-                bottom: 75.0,
-            };
             self.render_target.DrawText(
-                &line2_wide,
-                &self.text_format_line2,
-                &foreground_rect2,
-                &self.brush_next,
+                &text_wide,
+                format,
+                &fg_rect,
+                fg_brush,
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
                 windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
             );
@@ -312,6 +330,34 @@ impl OverlayRenderer {
         }
         ReleaseDC(HWND(null_mut()), screen_dc);
     }
+
+    #[allow(dead_code)]
+    pub unsafe fn render(
+        &mut self,
+        hwnd: HWND,
+        line1: &str,
+        line2: &str,
+        is_locked: bool,
+    ) {
+        let mut lines = Vec::with_capacity(2);
+        if !line1.is_empty() {
+            lines.push(RenderLine {
+                text: line1.to_string(),
+                y: 6.0,
+                opacity: 1.0,
+                is_active: true,
+            });
+        }
+        if !line2.is_empty() {
+            lines.push(RenderLine {
+                text: line2.to_string(),
+                y: 48.0,
+                opacity: 0.70,
+                is_active: false,
+            });
+        }
+        self.render_lines(hwnd, &lines, is_locked);
+    }
 }
 
 impl Drop for OverlayRenderer {
@@ -331,7 +377,7 @@ mod tests {
     #[test]
     fn test_renderer_creation() {
         unsafe {
-            let res = OverlayRenderer::new(1000, 80, "Segoe UI");
+            let res = OverlayRenderer::new(1000, 90, "Segoe UI", 24.0, 16.0);
             match res {
                 Ok(_) => println!("OverlayRenderer initialized successfully!"),
                 Err(e) => panic!("OverlayRenderer failed to initialize: {:?}", e),
