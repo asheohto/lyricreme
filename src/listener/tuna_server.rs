@@ -1,24 +1,6 @@
 use std::sync::mpsc::Sender;
 use std::thread;
-use serde::Deserialize;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TunaPayload {
-    pub data: TunaData,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct TunaData {
-    pub title: Option<String>,
-    #[serde(default)]
-    pub artists: Vec<String>,
-    pub duration: Option<u64>,
-    pub progress: Option<u64>,
-    pub status: Option<String>,
-    pub album: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct TunaUpdate {
@@ -57,19 +39,38 @@ impl TunaServer {
 
                     if request.method() == &Method::Post {
                         let mut body = String::new();
-                        if request.as_reader().read_to_string(&mut body).is_ok() {
-                            if let Ok(payload) = serde_json::from_str::<TunaPayload>(&body) {
-                                let d = payload.data;
-                                let title = d.title.unwrap_or_default().trim().to_string();
-                                let artist = d.artists.first().cloned().unwrap_or_default().trim().to_string();
-                                let is_playing = d.status.as_deref().unwrap_or("playing").eq_ignore_ascii_case("playing");
+                        let _ = request.as_reader().read_to_string(&mut body);
+
+                        if !body.is_empty() {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                                let data = if v.get("data").is_some() { &v["data"] } else { &v };
+
+                                let title = data["title"].as_str().unwrap_or_default().trim().to_string();
+
+                                let artist = if let Some(artists) = data["artists"].as_array() {
+                                    artists.first().and_then(|a| a.as_str()).unwrap_or_default().trim().to_string()
+                                } else {
+                                    data["artist"].as_str().unwrap_or_default().trim().to_string()
+                                };
+
+                                let duration_ms = data["duration"].as_u64()
+                                    .or_else(|| data["duration"].as_f64().map(|f| f as u64))
+                                    .unwrap_or(0);
+
+                                let progress_ms = data["progress"].as_u64()
+                                    .or_else(|| data["progress"].as_f64().map(|f| f as u64))
+                                    .unwrap_or(0);
+
+                                let is_playing = data["status"].as_str()
+                                    .map(|s| s.eq_ignore_ascii_case("playing"))
+                                    .unwrap_or(true);
 
                                 if !title.is_empty() {
                                     let update = TunaUpdate {
                                         title,
                                         artist,
-                                        duration_ms: d.duration.unwrap_or(0),
-                                        progress_ms: d.progress.unwrap_or(0),
+                                        duration_ms,
+                                        progress_ms,
                                         is_playing,
                                     };
                                     let _ = tx.send(update);
