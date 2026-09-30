@@ -65,7 +65,7 @@ pub fn get_monitor_refresh_rate() -> u32 {
 /// Analytical underdamped formulation:
 /// x(t) = 1.0 - exp(-zeta * omega_n * t) * (cos(omega_d * t) + (zeta * omega_n / omega_d) * sin(omega_d * t))
 pub struct SpringOscillator {
-    pub zeta: f32,       // Damping ratio (0.75 for crisp, tactile overshoot)
+    pub zeta: f32,       // Damping ratio (0.75 for crisp tactile overshoot)
     pub omega_n: f32,    // Natural angular frequency (12.5 rad/s)
     pub duration_s: f32, // Settling duration (0.48s)
 }
@@ -98,37 +98,23 @@ impl SpringOscillator {
     }
 }
 
-/// Computes organic ambient floating offsets using dual-harmonic sinusoids.
-/// Produces a calm, zero-gravity hovering drift.
-pub fn organic_float_offsets(app_start: &Instant) -> (f32, f32) {
-    let t = app_start.elapsed().as_secs_f64();
-    // Line 1 floating: dual harmonic breathing (~3.6s cycle)
-    let l1 = (t * 1.75).sin() * 1.5 + (t * 0.85).cos() * 0.5;
-    // Line 2 floating: phase-shifted subtle drift (~4.2s cycle)
-    let l2 = (t * 1.50 + 1.25).sin() * 1.2 + (t * 0.70 + 0.40).cos() * 0.4;
-    (l1 as f32, l2 as f32)
-}
-
 pub struct AnimationState {
     pub current_line1: String,
     pub current_line2: String,
     pub old_line1: String,
     pub old_line2: String,
     pub transition_start: Option<Instant>,
-    pub app_start: Instant,
     pub spring: SpringOscillator,
 }
 
 impl AnimationState {
     pub fn new() -> Self {
-        let now = Instant::now();
         Self {
             current_line1: String::new(),
             current_line2: String::new(),
             old_line1: String::new(),
             old_line2: String::new(),
             transition_start: None,
-            app_start: now,
             spring: SpringOscillator::new(),
         }
     }
@@ -144,8 +130,7 @@ impl AnimationState {
         true
     }
 
-    #[allow(dead_code)]
-    pub fn is_transitioning(&self) -> bool {
+    pub fn is_animating(&self) -> bool {
         if let Some(start) = self.transition_start {
             start.elapsed().as_secs_f32() < self.spring.duration_s
         } else {
@@ -157,18 +142,17 @@ impl AnimationState {
 pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
     let mut lines = Vec::with_capacity(4);
 
-    let (float1, float2) = organic_float_offsets(&anim.app_start);
-    let l1_base_y = 6.0 + float1;
-    let l2_base_y = 48.0 + float2;
+    const L1_Y: f32 = 6.0;
+    const L2_Y: f32 = 48.0;
 
     let elapsed = anim.transition_start.map(|t| t.elapsed().as_secs_f32()).unwrap_or(999.0);
 
-    // If transition finished, render settled resting lines with ambient hover
+    // If transition finished, render settled resting lines (stationary, rock-solid, crisp)
     if elapsed >= anim.spring.duration_s {
         if !anim.current_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: l1_base_y,
+                y: L1_Y,
                 opacity: 1.0,
                 is_active: true,
             });
@@ -176,7 +160,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.current_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: l2_base_y,
+                y: L2_Y,
                 opacity: 0.70,
                 is_active: false,
             });
@@ -194,7 +178,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.current_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: l1_base_y,
+                y: L1_Y,
                 opacity: 1.0,
                 is_active: true,
             });
@@ -204,7 +188,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.old_line1.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line1.clone(),
-                y: l1_base_y - 18.0 * spring_val,
+                y: L1_Y - 18.0 * spring_val,
                 opacity: fade_out,
                 is_active: true,
             });
@@ -214,7 +198,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             let spring_disp = (1.0 - spring_val) * 20.0;
             lines.push(RenderLine {
                 text: anim.current_line1.clone(),
-                y: l1_base_y + spring_disp,
+                y: L1_Y + spring_disp,
                 opacity: fade_in,
                 is_active: true,
             });
@@ -226,7 +210,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.current_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: l2_base_y,
+                y: L2_Y,
                 opacity: 0.70,
                 is_active: false,
             });
@@ -236,7 +220,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
         if !anim.old_line2.is_empty() {
             lines.push(RenderLine {
                 text: anim.old_line2.clone(),
-                y: l2_base_y - 10.0 * spring_val,
+                y: L2_Y - 10.0 * spring_val,
                 opacity: fade_out * 0.70,
                 is_active: false,
             });
@@ -246,7 +230,7 @@ pub fn build_render_lines(anim: &AnimationState) -> Vec<RenderLine> {
             let spring_disp2 = (1.0 - spring_val) * 14.0;
             lines.push(RenderLine {
                 text: anim.current_line2.clone(),
-                y: l2_base_y + spring_disp2,
+                y: L2_Y + spring_disp2,
                 opacity: fade_in * 0.70,
                 is_active: false,
             });
@@ -370,10 +354,11 @@ impl OverlayWindow {
 
             timeBeginPeriod(1);
 
-            println!("[LyricReme] Entering high-refresh presentation loop ({} FPS)...", refresh_rate);
+            println!("[LyricReme] Entering native presentation loop ({} FPS transitions)...", refresh_rate);
             let mut msg: MSG = zeroed();
             let mut is_running = true;
             let mut next_frame = Instant::now();
+            let mut needs_render = true;
 
             while is_running {
                 // Drain any pending Win32 messages (mouse events, tray menu, close) with zero latency
@@ -390,32 +375,56 @@ impl OverlayWindow {
                     break;
                 }
 
-                if !GLOBAL_CONTEXT.is_null() {
+                let is_animating = if !GLOBAL_CONTEXT.is_null() {
                     let ctx = &mut *GLOBAL_CONTEXT;
                     let (line1, line2) = {
                         let state = ctx.player_state.lock().unwrap();
                         state.get_display_lyrics(ctx.config.time_offset_ms)
                     };
 
-                    ctx.anim.update(line1, line2);
-
-                    let lines = build_render_lines(&ctx.anim);
-                    ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
-                }
-
-                // Sub-millisecond precision pacing locked to exact display refresh rate
-                next_frame += frame_target;
-                let now = Instant::now();
-                if next_frame > now {
-                    let sleep_dur = next_frame - now;
-                    if sleep_dur > Duration::from_millis(2) {
-                        std::thread::sleep(sleep_dur - Duration::from_millis(1));
+                    let changed = ctx.anim.update(line1, line2);
+                    if changed {
+                        needs_render = true;
                     }
-                    while Instant::now() < next_frame {
-                        std::hint::spin_loop();
+
+                    if ctx.anim.is_animating() {
+                        let lines = build_render_lines(&ctx.anim);
+                        ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+                        needs_render = true;
+                        true
+                    } else if needs_render {
+                        // Render final settled frame
+                        let lines = build_render_lines(&ctx.anim);
+                        ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked);
+                        needs_render = false;
+                        false
+                    } else {
+                        false
                     }
-                } else if now - next_frame > frame_target {
-                    next_frame = now;
+                } else {
+                    false
+                };
+
+                // Pacing:
+                if is_animating {
+                    // During spring transition: lock to exact screen refresh rate (144 FPS)
+                    next_frame += frame_target;
+                    let now = Instant::now();
+                    if next_frame > now {
+                        let sleep_dur = next_frame - now;
+                        if sleep_dur > Duration::from_millis(2) {
+                            std::thread::sleep(sleep_dur - Duration::from_millis(1));
+                        }
+                        while Instant::now() < next_frame {
+                            std::hint::spin_loop();
+                        }
+                    } else if now - next_frame > frame_target {
+                        next_frame = now;
+                    }
+                } else {
+                    // When resting: text stays rock-solid still at 0% CPU!
+                    std::thread::sleep(Duration::from_millis(16));
+                    next_frame = Instant::now();
                 }
             }
             println!("[LyricReme] Exited presentation loop.");
@@ -676,21 +685,13 @@ mod tests {
     }
 
     #[test]
-    fn test_organic_floating() {
-        let start = Instant::now();
-        let (f1, f2) = organic_float_offsets(&start);
-        assert!(f1.abs() <= 2.5);
-        assert!(f2.abs() <= 2.0);
-    }
-
-    #[test]
     fn test_animation_state() {
         let mut anim = AnimationState::new();
-        assert!(!anim.is_transitioning());
+        assert!(!anim.is_animating());
 
         let changed = anim.update("Line 1".into(), "Line 2".into());
         assert!(changed);
-        assert!(anim.is_transitioning());
+        assert!(anim.is_animating());
 
         let lines = build_render_lines(&anim);
         assert!(!lines.is_empty());
