@@ -86,6 +86,7 @@ Right-click the LyricReme icon in the system tray:
 | Click-Through | Toggle click transparency |
 | Lock Position | Unlock to drag the overlay with the mouse |
 | Nudge Timing | Adjust sync offset (+0.2s / -0.2s / Reset) |
+<img width="465" height="361" alt="image" src="https://github.com/user-attachments/assets/b30180b0-2f08-4d09-91e2-8c630a0c04c9" />
 
 ---
 
