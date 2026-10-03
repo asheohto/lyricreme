@@ -37,30 +37,48 @@ impl LrcLibClient {
         self.cache_dir.join(format!("{}.lrc", safe_name))
     }
 
+    fn romaji_cache_path(&self, artist: &str, title: &str) -> PathBuf {
+        let safe_name = format!("{}_{}_romaji", sanitize_filename(artist), sanitize_filename(title));
+        self.cache_dir.join(format!("{}.lrc", safe_name))
+    }
+
     fn hiragana_cache_path(&self, artist: &str, title: &str) -> PathBuf {
         let safe_name = format!("{}_{}_hiragana", sanitize_filename(artist), sanitize_filename(title));
         self.cache_dir.join(format!("{}.lrc", safe_name))
     }
 
-    pub fn get_hiragana_lyrics(&self, artist: &str, title: &str, original_lrc: &str) -> Option<String> {
+    pub fn get_transliterated_lyrics(
+        &self,
+        artist: &str,
+        title: &str,
+        original_lrc: &str,
+    ) -> (Option<String>, Option<String>) {
         let clean_artist = clean_metadata(artist);
         let clean_title = clean_metadata(title);
 
-        let cache_file = self.hiragana_cache_path(&clean_artist, &clean_title);
-        if cache_file.exists() {
-            if let Ok(content) = fs::read_to_string(&cache_file) {
-                if !content.trim().is_empty() {
-                    return Some(content);
-                }
-            }
+        let romaji_file = self.romaji_cache_path(&clean_artist, &clean_title);
+        let hiragana_file = self.hiragana_cache_path(&clean_artist, &clean_title);
+
+        let romaji_cached = fs::read_to_string(&romaji_file).ok().filter(|s| !s.trim().is_empty());
+        let hiragana_cached = fs::read_to_string(&hiragana_file).ok().filter(|s| !s.trim().is_empty());
+
+        if romaji_cached.is_some() && hiragana_cached.is_some() {
+            return (romaji_cached, hiragana_cached);
         }
 
-        if let Some(hiragana_lrc) = crate::lrclib::convert_lrc_to_hiragana(original_lrc) {
-            let _ = fs::write(&cache_file, &hiragana_lrc);
-            Some(hiragana_lrc)
+        if let Some((romaji_lrc, hiragana_lrc)) = crate::lrclib::convert_lrc_to_transliterated(original_lrc) {
+            let _ = fs::write(&romaji_file, &romaji_lrc);
+            let _ = fs::write(&hiragana_file, &hiragana_lrc);
+            (Some(romaji_lrc), Some(hiragana_lrc))
         } else {
-            None
+            (romaji_cached, hiragana_cached)
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn get_hiragana_lyrics(&self, artist: &str, title: &str, original_lrc: &str) -> Option<String> {
+        let (_, hiragana) = self.get_transliterated_lyrics(artist, title, original_lrc);
+        hiragana
     }
 
     pub fn get_lyrics(&self, artist: &str, title: &str, duration_sec: Option<u64>) -> Option<String> {

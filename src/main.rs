@@ -80,17 +80,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 drop(state);
 
-                // If lyrics were found and contain Japanese, fetch/convert Hiragana in background
+                // If lyrics were found and contain Japanese, fetch/convert transliteration in background
                 if let Some(ref lrc_text) = lyrics {
                     if crate::lrclib::hiragana::contains_japanese(lrc_text) {
-                        println!("[LyricReme] Japanese lyrics detected for '{}', processing Hiragana...", req.title);
-                        let hira_lyrics = client.get_hiragana_lyrics(&req.artist, &req.title, lrc_text);
-                        if hira_lyrics.is_some() {
-                            println!("[LyricReme] Successfully loaded Hiragana lyrics for '{}'", req.title);
+                        println!("[LyricReme] Japanese lyrics detected for '{}', processing transliteration...", req.title);
+                        let (romaji, hiragana) = client.get_transliterated_lyrics(&req.artist, &req.title, lrc_text);
+                        if romaji.is_some() || hiragana.is_some() {
+                            println!("[LyricReme] Successfully loaded transliterated lyrics for '{}'", req.title);
                         }
                         let mut state = player_state_for_lrc.lock().unwrap();
                         if state.current_track == req.title {
-                            state.set_hiragana_lyrics(hira_lyrics);
+                            state.set_transliterated_lyrics(romaji, hiragana);
                         }
                     }
                 }

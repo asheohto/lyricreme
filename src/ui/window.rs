@@ -51,6 +51,7 @@ const IDM_OFFSET_RESET: usize = 2006;
 const IDM_EXIT: usize = 2007;
 const IDM_TOGGLE_VISUALIZER: usize = 2008;
 const IDM_TOGGLE_HIRAGANA: usize = 2009;
+const IDM_TOGGLE_ROMAJI: usize = 2010;
 // Position snap commands (one per LyricsPosition variant, 2100–2108)
 const IDM_POS_BASE: usize = 2100;
 // Text size commands (Small → XL, 2200–2204)
@@ -615,7 +616,7 @@ impl OverlayWindow {
             let mut anim = AnimationState::new();
             let (l1, l2, _init_status) = {
                 let state = player_state.lock().unwrap();
-                let (first1, first2) = state.get_display_lyrics(config.time_offset_ms, config.show_hiragana);
+                let (first1, first2) = state.get_display_lyrics(config.time_offset_ms, config.show_romaji, config.show_hiragana);
                 (first1, first2, state.lyrics_status.clone())
             };
             anim.current_line1 = l1;
@@ -676,7 +677,7 @@ impl OverlayWindow {
                     let ctx = &mut *GLOBAL_CONTEXT;
                     let (line1, line2, status, is_playing, audio_level) = {
                         let state = ctx.player_state.lock().unwrap();
-                        let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana);
+                        let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana);
                         (l1, l2, state.lyrics_status.clone(), state.is_playing, state.audio_level)
                     };
 
@@ -779,7 +780,7 @@ unsafe extern "system" fn window_proc(
                 let ctx = &mut *GLOBAL_CONTEXT;
                 let (line1, line2, status) = {
                     let state = ctx.player_state.lock().unwrap();
-                    let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana);
+                    let (l1, l2) = state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana);
                     (l1, l2, state.lyrics_status.clone())
                 };
 
@@ -904,6 +905,9 @@ unsafe fn show_tray_menu(hwnd: HWND) {
 
     let vis_flags = MF_STRING | if ctx.config.visualizer { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(hmenu, vis_flags, IDM_TOGGLE_VISUALIZER, w!("Visualizer (Music Reactive)"));
+
+    let romaji_flags = MF_STRING | if ctx.config.show_romaji { MF_CHECKED } else { MF_UNCHECKED };
+    let _ = AppendMenuW(hmenu, romaji_flags, IDM_TOGGLE_ROMAJI, w!("Show Romanized (Japanese)"));
 
     let hira_flags = MF_STRING | if ctx.config.show_hiragana { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(hmenu, hira_flags, IDM_TOGGLE_HIRAGANA, w!("Show Hiragana (Japanese)"));
@@ -1087,7 +1091,7 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             let _ = ctx.config.save();
             let (l1, l2) = {
                 let state = ctx.player_state.lock().unwrap();
-                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana)
+                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana)
             };
             ctx.anim.update(l1, l2);
             let lines = build_render_lines(&ctx.anim);
@@ -1098,7 +1102,7 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             let _ = ctx.config.save();
             let (l1, l2) = {
                 let state = ctx.player_state.lock().unwrap();
-                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana)
+                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana)
             };
             ctx.anim.update(l1, l2);
             let lines = build_render_lines(&ctx.anim);
@@ -1109,7 +1113,7 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             let _ = ctx.config.save();
             let (l1, l2) = {
                 let state = ctx.player_state.lock().unwrap();
-                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana)
+                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana)
             };
             ctx.anim.update(l1, l2);
             let lines = build_render_lines(&ctx.anim);
@@ -1124,12 +1128,29 @@ unsafe fn handle_menu_command(hwnd: HWND, cmd_id: usize) {
             let lines = build_render_lines(&ctx.anim);
             ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked, ctx.config.position.text_alignment());
         }
-        IDM_TOGGLE_HIRAGANA => {
-            ctx.config.show_hiragana = !ctx.config.show_hiragana;
+        IDM_TOGGLE_ROMAJI => {
+            ctx.config.show_romaji = !ctx.config.show_romaji;
+            if ctx.config.show_romaji {
+                ctx.config.show_hiragana = false;
+            }
             let _ = ctx.config.save();
             let (l1, l2) = {
                 let state = ctx.player_state.lock().unwrap();
-                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_hiragana)
+                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana)
+            };
+            ctx.anim.update(l1, l2);
+            let lines = build_render_lines(&ctx.anim);
+            ctx.renderer.render_lines(hwnd, &lines, ctx.is_locked, ctx.config.position.text_alignment());
+        }
+        IDM_TOGGLE_HIRAGANA => {
+            ctx.config.show_hiragana = !ctx.config.show_hiragana;
+            if ctx.config.show_hiragana {
+                ctx.config.show_romaji = false;
+            }
+            let _ = ctx.config.save();
+            let (l1, l2) = {
+                let state = ctx.player_state.lock().unwrap();
+                state.get_display_lyrics(ctx.config.time_offset_ms, ctx.config.show_romaji, ctx.config.show_hiragana)
             };
             ctx.anim.update(l1, l2);
             let lines = build_render_lines(&ctx.anim);

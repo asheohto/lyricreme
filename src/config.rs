@@ -99,6 +99,9 @@ pub struct AppConfig {
     /// Music-reactive visualizer art (`assets/vibe.png`) next to the lyrics.
     #[serde(default = "default_visualizer")]
     pub visualizer: bool,
+    /// Display Japanese lyrics in Romanized (Romaji) reading.
+    #[serde(default = "default_show_romaji")]
+    pub show_romaji: bool,
     /// Display Japanese lyrics in Hiragana reading.
     #[serde(default)]
     pub show_hiragana: bool,
@@ -109,6 +112,7 @@ fn default_text_color() -> [u8; 3] { [255, 255, 255] }
 fn default_outline_color() -> [u8; 3] { [0, 0, 0] }
 fn default_outline_width() -> f32 { 1.5 }
 fn default_visualizer() -> bool { true }
+fn default_show_romaji() -> bool { true }
 
 /// Named colour presets offered in the tray "Text Color" submenu.
 pub const COLOR_PRESETS: [(&str, [u8; 3]); 7] = [
@@ -140,6 +144,7 @@ impl Default for AppConfig {
             outline_color: [0, 0, 0],
             outline_width: 1.5,
             visualizer: true,
+            show_romaji: true,
             show_hiragana: false,
         }
     }
@@ -213,6 +218,7 @@ mod tests {
         assert_eq!(cfg.outline_color, [0, 0, 0]);
         assert_eq!(cfg.outline_width, 1.5);
         assert!(cfg.visualizer);
+        assert!(cfg.show_romaji);
         assert!(!cfg.show_hiragana);
         assert_eq!(cfg.time_offset_ms, 800);
         assert_eq!(cfg.position, LyricsPosition::TopCenter);
@@ -226,6 +232,7 @@ mod tests {
         cfg.text_color = COLOR_PRESETS[4].1;
         cfg.outline_width = 3.5;
         cfg.font_size_line1 = 30.0;
+        cfg.show_romaji = false;
         cfg.show_hiragana = true;
 
         let json = serde_json::to_string(&cfg).unwrap();
@@ -234,6 +241,7 @@ mod tests {
         assert_eq!(back.text_color, COLOR_PRESETS[4].1);
         assert_eq!(back.outline_width, 3.5);
         assert_eq!(back.font_size_line1, 30.0);
+        assert!(!back.show_romaji);
         assert!(back.show_hiragana);
     }
 }

@@ -27,7 +27,7 @@ When a track has no timed lyrics available, it displays a music-reactive visuali
 - Borderless and transparent window with per-pixel alpha.
 - Music-reactive visualizer powered by WASAPI loopback audio when lyrics are not found.
 - Synchronized timed lyrics from LRCLIB with local caching in `%LOCALAPPDATA%\LyricReme\cache\`.
-- Hiragana transliteration for Japanese lyrics with local caching.
+- Romanized (Romaji) and Hiragana transliteration for Japanese lyrics with local caching.
 - Two-line layout: current active line in bold with drop shadows, next line preview.
 - Click-through mode (`WS_EX_TRANSPARENT`) so clicks pass directly to background apps.
 - System tray menu for position anchors, text sizing, colors, outline, opacity, and timing offsets.
@@ -84,7 +84,8 @@ Right-click the LyricReme icon in the system tray:
 | Outline | Drop shadow stroke width (None, Thin, Medium, Thick) |
 | Opacity | Overlay transparency (40%, 60%, 80%, 100%) |
 | Visualizer | Toggle audio-reactive pulse when lyrics are not found |
-| Show Hiragana | Toggle Hiragana transliteration for Japanese lyrics |
+| Show Romanized | Toggle Romanized (Romaji) reading for Japanese lyrics |
+| Show Hiragana | Toggle Hiragana reading for Japanese lyrics |
 | Click-Through | Toggle click transparency |
 | Lock Position | Unlock to drag the overlay with the mouse |
 | Nudge Timing | Adjust sync offset (+0.2s / -0.2s / Reset) |

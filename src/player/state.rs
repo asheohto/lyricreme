@@ -28,6 +28,7 @@ pub struct PlayerState {
     pub last_update: Option<Instant>,
     pub parsed_lrc: Option<ParsedLrc>,
     pub parsed_hiragana_lrc: Option<ParsedLrc>,
+    pub parsed_romaji_lrc: Option<ParsedLrc>,
     pub lyrics_status: LyricsStatus,
     /// Normalised 0.0–1.0 loudness of the system audio mix, published by the
     /// WASAPI loopback capture thread (`audio` module) and read by the UI to
@@ -46,6 +47,7 @@ impl Default for PlayerState {
             last_update: None,
             parsed_lrc: None,
             parsed_hiragana_lrc: None,
+            parsed_romaji_lrc: None,
             lyrics_status: LyricsStatus::Idle,
             audio_level: 0.0,
         }
@@ -70,6 +72,7 @@ impl PlayerState {
         if track_changed {
             self.parsed_lrc = None;
             self.parsed_hiragana_lrc = None;
+            self.parsed_romaji_lrc = None;
             self.lyrics_status = LyricsStatus::Loading;
 
             let duration_sec = if update.duration_ms > 0 {
@@ -102,6 +105,26 @@ impl PlayerState {
         }
     }
 
+    pub fn set_transliterated_lyrics(&mut self, romaji: Option<String>, hiragana: Option<String>) {
+        self.parsed_romaji_lrc = romaji.and_then(|text| {
+            let parsed = ParsedLrc::parse(&text);
+            if !parsed.lines.is_empty() {
+                Some(parsed)
+            } else {
+                None
+            }
+        });
+        self.parsed_hiragana_lrc = hiragana.and_then(|text| {
+            let parsed = ParsedLrc::parse(&text);
+            if !parsed.lines.is_empty() {
+                Some(parsed)
+            } else {
+                None
+            }
+        });
+    }
+
+    #[allow(dead_code)]
     pub fn set_hiragana_lyrics(&mut self, lrc_text: Option<String>) {
         if let Some(text) = lrc_text {
             let parsed = ParsedLrc::parse(&text);
@@ -139,7 +162,7 @@ impl PlayerState {
         clamped
     }
 
-    pub fn get_display_lyrics(&self, offset_ms: i64, show_hiragana: bool) -> (String, String) {
+    pub fn get_display_lyrics(&self, offset_ms: i64, show_romaji: bool, show_hiragana: bool) -> (String, String) {
         if self.current_track.is_empty() {
             return (
                 "LyricReme — Waiting for Pear Desktop...".to_string(),
@@ -157,7 +180,9 @@ impl PlayerState {
                 String::new(),
             ),
             LyricsStatus::Loaded => {
-                let lrc_ref = if show_hiragana {
+                let lrc_ref = if show_romaji {
+                    self.parsed_romaji_lrc.as_ref().or(self.parsed_lrc.as_ref())
+                } else if show_hiragana {
                     self.parsed_hiragana_lrc.as_ref().or(self.parsed_lrc.as_ref())
                 } else {
                     self.parsed_lrc.as_ref()

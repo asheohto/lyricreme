@@ -60,9 +60,10 @@ pub fn extract_transliteration(val: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Converts an entire synchronized LRC string into Hiragana.
+/// Converts an entire synchronized LRC string into Romanized and Hiragana versions.
+/// Returns (romaji_lrc, hiragana_lrc).
 /// Preserves all timestamps and non-Japanese lines.
-pub fn convert_lrc_to_hiragana(lrc_content: &str) -> Option<String> {
+pub fn convert_lrc_to_transliterated(lrc_content: &str) -> Option<(String, String)> {
     if !contains_japanese(lrc_content) {
         return None;
     }
@@ -76,7 +77,8 @@ pub fn convert_lrc_to_hiragana(lrc_content: &str) -> Option<String> {
     const BATCH_SIZE: usize = 20;
     const DELIM: &str = " ~~~ ";
 
-    let mut converted_lines: Vec<LyricLine> = Vec::with_capacity(parsed.lines.len());
+    let mut romaji_lines: Vec<LyricLine> = Vec::with_capacity(parsed.lines.len());
+    let mut hiragana_lines: Vec<LyricLine> = Vec::with_capacity(parsed.lines.len());
 
     for chunk in parsed.lines.chunks(BATCH_SIZE) {
         // Collect indices of lines in this chunk that actually need Japanese transliteration
@@ -95,20 +97,33 @@ pub fn convert_lrc_to_hiragana(lrc_content: &str) -> Option<String> {
 
                 if parts.len() == chunk.len() {
                     for (i, line) in chunk.iter().enumerate() {
-                        let text = if need_conv[i] {
-                            let hira = to_hiragana(parts[i].trim());
-                            if hira.trim().is_empty() {
+                        if need_conv[i] {
+                            let r_part = parts[i].trim();
+                            let romaji_text = if r_part.is_empty() {
+                                line.text.clone()
+                            } else {
+                                r_part.to_string()
+                            };
+
+                            let hira = to_hiragana(r_part);
+                            let hira_text = if hira.trim().is_empty() {
                                 line.text.clone()
                             } else {
                                 hira
-                            }
+                            };
+
+                            romaji_lines.push(LyricLine {
+                                time_ms: line.time_ms,
+                                text: romaji_text,
+                            });
+                            hiragana_lines.push(LyricLine {
+                                time_ms: line.time_ms,
+                                text: hira_text,
+                            });
                         } else {
-                            line.text.clone()
-                        };
-                        converted_lines.push(LyricLine {
-                            time_ms: line.time_ms,
-                            text,
-                        });
+                            romaji_lines.push(line.clone());
+                            hiragana_lines.push(line.clone());
+                        }
                     }
                     continue;
                 }
@@ -117,21 +132,37 @@ pub fn convert_lrc_to_hiragana(lrc_content: &str) -> Option<String> {
 
         // Fallback for this chunk: keep original lines
         for line in chunk {
-            converted_lines.push(line.clone());
+            romaji_lines.push(line.clone());
+            hiragana_lines.push(line.clone());
         }
     }
 
-    // Serialize back into standard LRC format
-    let mut out = String::new();
-    for line in converted_lines {
-        let total_sec = line.time_ms / 1000;
-        let ms_rem = (line.time_ms % 1000) / 10;
-        let min = total_sec / 60;
-        let sec = total_sec % 60;
-        out.push_str(&format!("[{:02}:{:02}.{:02}] {}\n", min, sec, ms_rem, line.text));
-    }
+    let serialize = |lines: &[LyricLine]| -> String {
+        let mut out = String::new();
+        for line in lines {
+            let total_sec = line.time_ms / 1000;
+            let ms_rem = (line.time_ms % 1000) / 10;
+            let min = total_sec / 60;
+            let sec = total_sec % 60;
+            out.push_str(&format!("[{:02}:{:02}.{:02}] {}\n", min, sec, ms_rem, line.text));
+        }
+        out
+    };
 
-    Some(out)
+    Some((serialize(&romaji_lines), serialize(&hiragana_lines)))
+}
+
+/// Converts an entire synchronized LRC string into Romanized (Romaji) lyrics.
+#[allow(dead_code)]
+pub fn convert_lrc_to_romaji(lrc_content: &str) -> Option<String> {
+    convert_lrc_to_transliterated(lrc_content).map(|(r, _)| r)
+}
+
+/// Converts an entire synchronized LRC string into Hiragana.
+/// Preserves all timestamps and non-Japanese lines.
+#[allow(dead_code)]
+pub fn convert_lrc_to_hiragana(lrc_content: &str) -> Option<String> {
+    convert_lrc_to_transliterated(lrc_content).map(|(_, h)| h)
 }
 
 fn urlencode(s: &str) -> String {
