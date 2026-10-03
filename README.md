@@ -4,7 +4,7 @@
 
   # LyricReme
 
-  A lightweight, borderless desktop lyrics overlay for Windows with a music-reactive visualizer.
+  Desktop lyrics overlay for Windows with a music-reactive visualizer.
 
   [![Release](https://img.shields.io/github/v/release/asheohto/lyricreme?style=for-the-badge&logo=github&color=BC96E6)](https://github.com/asheohto/lyricreme/releases/latest)
   [![License](https://img.shields.io/badge/License-MIT-2ecc71?style=for-the-badge)](LICENSE)
@@ -14,77 +14,80 @@
 
 ---
 
-## ✨ What it does
+## About
 
-- ✅ **Borderless & Transparent**: Floats cleanly at the top of your screen with per-pixel alpha and zero background box.
-- ✅ **Music-Reactive Visualizer**: Pulses dynamically to WASAPI loopback audio loudness when lyrics are not found.
-- ✅ **Synchronized Timed Lyrics**: Fetches `.lrc` lyrics from [LRCLIB](https://lrclib.net/) and auto-caches them locally.
-- ✅ **Two-Line Dynamic Layout**: Active line with crisp drop-shadow legibility plus upcoming preview line with directional spring sliding.
-- ✅ **Click-Through Transparency (`WS_EX_TRANSPARENT`)**: Mouse clicks pass through cleanly to underlying games and apps.
-- ✅ **System Tray Controls**: Adjust text size, font color, outline thickness, opacity, screen anchor, and timing nudge (`±0.2s`).
-- ✅ **Ultra-Low Overhead**: Native Win32 + Direct2D/DirectWrite in Rust (<0.1% CPU, ~60MB RAM, zero webview bloat).
+LyricReme is a borderless desktop lyrics overlay for Windows. It receives track updates from Pear Desktop's Tuna plugin, fetches synchronized lyrics from LRCLIB, and renders a floating two-line overlay over games, browsers, and desktop apps.
+
+When a track has no timed lyrics available, it displays a music-reactive visualizer scaled to system audio loudness.
 
 ---
 
-## 🚀 Getting Started
+## Features
+
+- Borderless and transparent window with per-pixel alpha.
+- Music-reactive visualizer powered by WASAPI loopback audio when lyrics are not found.
+- Synchronized timed lyrics from LRCLIB with local caching in `%LOCALAPPDATA%\LyricReme\cache\`.
+- Two-line layout: current active line in bold with drop shadows, next line preview.
+- Click-through mode (`WS_EX_TRANSPARENT`) so clicks pass directly to background apps.
+- System tray menu for position anchors, text sizing, colors, outline, opacity, and timing offsets.
+- Written in Rust using Win32 and Direct2D/DirectWrite.
+
+---
+
+## Getting Started
 
 ### 1. Enable Tuna in Pear Desktop
 
-1. Open **[Pear Desktop](https://github.com/pear-devs/pear-desktop)** (YouTube Music).
-2. Go to **Settings** -> **Plugins**.
-3. Toggle **Tuna OBS** to **ON** (broadcasts track info to `127.0.0.1:1608`).
+1. Open Pear Desktop.
+2. Go to Settings -> Plugins.
+3. Turn on Tuna OBS (sends track updates to `127.0.0.1:1608`).
 
 ### 2. Run LyricReme
 
-1. Download the latest **`lyricreme.exe`** from [**Releases**](https://github.com/asheohto/lyricreme/releases/latest).
+1. Download `lyricreme.exe` from Releases.
 2. Run `lyricreme.exe`.
-3. Play music — lyrics synchronize automatically!
+3. Play any track in Pear Desktop.
 
 ---
 
-## 🛠️ Building from Source (Developers)
+## Building from Source
 
-Requires Windows 10/11 and Rust (MSVC toolchain):
+Requires Windows and Rust with the MSVC toolchain:
 
 ```powershell
-# Clone the repository
 git clone https://github.com/asheohto/lyricreme.git
 cd lyricreme
-
-# Build release binary
 cargo build --release
-
-# Run
 .\target\release\lyricreme.exe
 ```
 
 ---
 
-## ⚙️ System Tray Menu
+## Tray Menu
 
-Right-click the **LyricReme** tray icon near your clock:
+Right-click the LyricReme icon in the system tray:
 
 | Option | Description |
 | :--- | :--- |
-| **Position** | Snap to 9 screen anchors (Top Center, Top Left, Bottom Center, etc.) |
-| **Text Size** | Switch font sizes from Small to Huge with auto-scaled window bounds |
-| **Text Color** | Pick presets (White, Black, Cream, Sky, Pink, Mint, Gold) |
-| **Outline** | Adjust drop-shadow stroke (None, Thin, Medium, Thick) |
-| **Opacity** | Set overlay master transparency (40%, 60%, 80%, 100%) |
-| **Music Visualizer** | Toggle music-reactive beat pulse when lyrics are not found |
-| **Click-Through** | Enable or disable click transparency |
-| **Lock Position** | Unlock to drag and freely reposition the overlay anywhere |
-| **Nudge Timing** | Lead/lag offset adjustments (`+0.2s` / `-0.2s` / Reset) |
+| Position | Snap overlay to 9 screen anchors (Top Center, Top Left, Bottom Center, etc.) |
+| Text Size | Font sizes from Small to Huge with automatic window bounds scaling |
+| Text Color | Color presets (White, Black, Cream, Sky, Pink, Mint, Gold) |
+| Outline | Drop shadow stroke width (None, Thin, Medium, Thick) |
+| Opacity | Overlay transparency (40%, 60%, 80%, 100%) |
+| Visualizer | Toggle audio-reactive pulse when lyrics are not found |
+| Click-Through | Toggle click transparency |
+| Lock Position | Unlock to drag the overlay with the mouse |
+| Nudge Timing | Adjust sync offset (+0.2s / -0.2s / Reset) |
 
 ---
 
-## 📜 License
+## License
 
-MIT – see the [LICENSE](LICENSE) file.
+MIT - see [LICENSE](LICENSE).
 
 ---
 
-## 📧 Contact & Support
+## Support
 
-- GitHub Issues: https://github.com/asheohto/lyricreme/issues
-- Support / Donate: https://ko-fi.com/omoretti
+- Issues: https://github.com/asheohto/lyricreme/issues
+- Ko-fi: https://ko-fi.com/omoretti
