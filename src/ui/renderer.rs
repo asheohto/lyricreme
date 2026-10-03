@@ -1,12 +1,15 @@
 use std::mem::zeroed;
 use std::ptr::null_mut;
+use std::sync::OnceLock;
 use windows::core::{w, Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
+use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Bitmap, ID2D1DCRenderTarget, ID2D1Factory, ID2D1RenderTarget,
+    ID2D1SolidColorBrush, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE,
     D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
@@ -15,6 +18,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -25,12 +29,87 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, UpdateLayeredWindow, ULW_ALPHA,
 };
 
+use crate::config::TextAlign;
+
+/// The visualizer art is embedded in the binary (like the tray icon in
+/// `build.rs`) so a stray working directory can't break it.
+const VIBE_PNG: &[u8] = include_bytes!("../../assets/vibe.png");
+
+/// Decoded visualizer art, cached for the process.
+static VIBE_PIXELS: OnceLock<Option<(u32, u32, Vec<u8>)>> = OnceLock::new();
+
+/// Decodes the embedded PNG to premultiplied BGRA with WIC.
+/// Returns None if WIC fails to initialise or the image is malformed.
+unsafe fn decode_vibe_png() -> Option<(u32, u32, Vec<u8>)> {
+    use windows::Win32::Graphics::Imaging::{
+        IWICFormatConverter, IWICImagingFactory, IWICPalette, CLSID_WICImagingFactory,
+        GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom,
+        WICDecodeMetadataCacheOnLoad,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+
+    let factory: IWICImagingFactory =
+        CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+    let stream = SHCreateMemStream(Some(VIBE_PNG))?;
+    let decoder = factory
+        .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
+        .ok()?;
+    let frame = decoder.GetFrame(0).ok()?;
+    let converter: IWICFormatConverter = factory.CreateFormatConverter().ok()?;
+    converter
+        .Initialize(
+            &frame,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None::<&IWICPalette>,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )
+        .ok()?;
+
+    let mut width = 0u32;
+    let mut height = 0u32;
+    converter.GetSize(&mut width, &mut height).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut pixels = vec![0u8; width as usize * height as usize * 4];
+    converter
+        .CopyPixels(std::ptr::null(), width * 4, &mut pixels)
+        .ok()?;
+
+    Some((width, height, pixels))
+}
+
+fn vibe_art() -> Option<&'static (u32, u32, Vec<u8>)> {
+    VIBE_PIXELS
+        .get_or_init(|| unsafe {
+            let res = decode_vibe_png();
+            if res.is_none() {
+                eprintln!("[LyricReme] Visualizer art failed to decode; rendering without it.");
+            }
+            res
+        })
+        .as_ref()
+}
+
+/// Music-reactive art drawn in place of lyrics.
+struct Visualizer {
+    bitmap: ID2D1Bitmap,
+    scale: f32,
+    visible: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RenderLine {
     pub text: String,
     pub y: f32,
     pub opacity: f32,
     pub is_active: bool,
+    /// Rotation in degrees around the line's own horizontal centre (wobble).
+    pub rotation_deg: f32,
 }
 
 pub struct OverlayRenderer {
@@ -54,6 +133,12 @@ pub struct OverlayRenderer {
     brush_next: ID2D1SolidColorBrush,
     text_format_line1: IDWriteTextFormat,
     text_format_line2: IDWriteTextFormat,
+    outline_width: f32,
+    /// Global overlay opacity 0–255, applied via BLENDFUNCTION.SourceConstantAlpha
+    /// (UpdateLayeredWindow and SetLayeredWindowAttributes are mutually exclusive).
+    master_alpha: u8,
+    /// Music-reactive art. `None` if the embedded PNG failed to decode.
+    visualizer: Option<Visualizer>,
 }
 
 impl OverlayRenderer {
@@ -63,6 +148,9 @@ impl OverlayRenderer {
         font_family: &str,
         font_size_line1: f32,
         font_size_line2: f32,
+        text_color: [u8; 3],
+        outline_color: [u8; 3],
+        outline_width: f32,
     ) -> Result<Self, windows::core::Error> {
         let screen_dc = GetDC(HWND(null_mut()));
         let hdc_mem = CreateCompatibleDC(screen_dc);
@@ -145,21 +233,63 @@ impl OverlayRenderer {
 
         // Outline / drop shadow brush for maximum text readability without background box
         let brush_glow = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.90 },
+            &D2D1_COLOR_F {
+                r: outline_color[0] as f32 / 255.0,
+                g: outline_color[1] as f32 / 255.0,
+                b: outline_color[2] as f32 / 255.0,
+                a: 0.90,
+            },
             None,
         )?;
 
-        // Active primary lyric (Line 1) - crisp pure white
+        // Active primary lyric (Line 1) - user-configurable colour
         let brush_active = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            &D2D1_COLOR_F {
+                r: text_color[0] as f32 / 255.0,
+                g: text_color[1] as f32 / 255.0,
+                b: text_color[2] as f32 / 255.0,
+                a: 1.0,
+            },
             None,
         )?;
 
-        // Upcoming preview lyric (Line 2) - subtle soft silver
+        // Upcoming preview lyric (Line 2) - same colour, dimmed via opacity at draw time
         let brush_next = render_target.CreateSolidColorBrush(
-            &D2D1_COLOR_F { r: 0.88, g: 0.92, b: 0.96, a: 0.70 },
+            &D2D1_COLOR_F {
+                r: text_color[0] as f32 / 255.0,
+                g: text_color[1] as f32 / 255.0,
+                b: text_color[2] as f32 / 255.0,
+                a: 0.70,
+            },
             None,
         )?;
+
+        // Visualizer art: decoded once per process, then uploaded to this target
+        let visualizer = if let Some((w, h, pixels)) = vibe_art() {
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            let size = D2D_SIZE_U {
+                width: *w,
+                height: *h,
+            };
+            let pitch = w * 4;
+            render_target
+                .CreateBitmap(size, Some(pixels.as_ptr() as *const core::ffi::c_void), pitch, &props)
+                .ok()
+                .map(|bitmap| Visualizer {
+                    bitmap,
+                    scale: 1.0,
+                    visible: false,
+                })
+        } else {
+            None
+        };
 
         Ok(Self {
             width,
@@ -179,6 +309,9 @@ impl OverlayRenderer {
             brush_next,
             text_format_line1,
             text_format_line2,
+            outline_width,
+            master_alpha: 255,
+            visualizer,
         })
     }
 
@@ -187,6 +320,7 @@ impl OverlayRenderer {
         hwnd: HWND,
         lines: &[RenderLine],
         is_locked: bool,
+        text_align: TextAlign,
     ) {
         let rect = RECT {
             left: 0,
@@ -198,6 +332,15 @@ impl OverlayRenderer {
         if self.dc_render_target.BindDC(self.hdc_mem, &rect).is_err() {
             return;
         }
+
+        // Apply text alignment (DirectWrite alignment is per-format, update every frame)
+        let dwrite_align = match text_align {
+            TextAlign::Left   => DWRITE_TEXT_ALIGNMENT_LEADING,
+            TextAlign::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
+            TextAlign::Right  => DWRITE_TEXT_ALIGNMENT_TRAILING,
+        };
+        let _ = self.text_format_line1.SetTextAlignment(dwrite_align);
+        let _ = self.text_format_line2.SetTextAlignment(dwrite_align);
 
         self.render_target.BeginDraw();
         self.render_target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -226,6 +369,9 @@ impl OverlayRenderer {
             self.render_target.DrawRoundedRectangle(&guide_rect, &self.brush_drag_border, 1.5, None);
         }
 
+        // Visualizer art sits in place of the text when no lyrics are found.
+        self.draw_visualizer(text_align);
+
         // Render each active line
         for line in lines {
             if line.text.is_empty() || line.opacity <= 0.005 {
@@ -238,32 +384,54 @@ impl OverlayRenderer {
             } else {
                 &self.text_format_line2
             };
-            let height = if line.is_active { 42.0 } else { 32.0 };
+            // Line box height scales with the actual font size so larger text isn't clipped.
+            // Times ~1.75 leaves room for ascenders/descenders; the outline extends a
+            // little beyond that, which DrawText does not clip.
+            let font_size = if line.is_active {
+                self.text_format_line1.GetFontSize()
+            } else {
+                self.text_format_line2.GetFontSize()
+            };
+            let height = (font_size * 1.75).max(if line.is_active { 42.0 } else { 32.0 });
             let alpha = line.opacity.clamp(0.0, 1.0);
+
+            // Wobble: rotate the whole line (outline + fill) about its own centre.
+            // Identity transform is restored after the line so layout stays untouched.
+            let wobbling = line.rotation_deg.abs() > 0.0005;
+            if wobbling {
+                let cx = self.width as f32 / 2.0;
+                let cy = line.y + height / 2.0;
+                let m = Matrix3x2::rotation(line.rotation_deg.to_radians(), cx, cy);
+                self.render_target.SetTransform(&m);
+            }
 
             // 1. 8-directional shadow / outline for crisp contrast against any background
             self.brush_glow.SetOpacity(0.90 * alpha);
-            let shadow_offsets = [
-                (-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5),
-                (-1.2, -1.2), (1.2, -1.2), (-1.2, 1.2), (1.2, 1.2),
-                (0.0, 2.0),
-            ];
+            let ow = self.outline_width;
+            if ow > 0.01 {
+                let shadow_offsets = [
+                    (-ow, 0.0), (ow, 0.0), (0.0, -ow), (0.0, ow),
+                    (-ow * 0.8, -ow * 0.8), (ow * 0.8, -ow * 0.8),
+                    (-ow * 0.8, ow * 0.8), (ow * 0.8, ow * 0.8),
+                    (0.0, ow * 1.3),
+                ];
 
-            for (dx, dy) in shadow_offsets {
-                let s_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                    left: dx,
-                    top: line.y + dy,
-                    right: self.width as f32 + dx,
-                    bottom: line.y + height + dy,
-                };
-                self.render_target.DrawText(
-                    &text_wide,
-                    format,
-                    &s_rect,
-                    &self.brush_glow,
-                    windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-                );
+                for (dx, dy) in shadow_offsets {
+                    let s_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                        left: dx,
+                        top: line.y + dy,
+                        right: self.width as f32 + dx,
+                        bottom: line.y + height + dy,
+                    };
+                    self.render_target.DrawText(
+                        &text_wide,
+                        format,
+                        &s_rect,
+                        &self.brush_glow,
+                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
 
             // 2. Foreground text
@@ -290,6 +458,10 @@ impl OverlayRenderer {
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
                 windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
             );
+
+            if wobbling {
+                self.render_target.SetTransform(&Matrix3x2::identity());
+            }
         }
 
         let _ = self.render_target.EndDraw(None, None);
@@ -302,7 +474,7 @@ impl OverlayRenderer {
         let blend = BLENDFUNCTION {
             BlendOp: 0,
             BlendFlags: 0,
-            SourceConstantAlpha: 255,
+            SourceConstantAlpha: self.master_alpha,
             AlphaFormat: 1,
         };
 
@@ -331,6 +503,107 @@ impl OverlayRenderer {
         ReleaseDC(HWND(null_mut()), screen_dc);
     }
 
+    /// Recolour text/outline brushes at runtime (tray colour picker) without recreating the target.
+    pub fn set_colors(&mut self, text_color: [u8; 3], outline_color: [u8; 3], outline_width: f32) {
+        unsafe {
+            self.brush_active.SetColor(&D2D1_COLOR_F {
+                r: text_color[0] as f32 / 255.0,
+                g: text_color[1] as f32 / 255.0,
+                b: text_color[2] as f32 / 255.0,
+                a: 1.0,
+            });
+            self.brush_next.SetColor(&D2D1_COLOR_F {
+                r: text_color[0] as f32 / 255.0,
+                g: text_color[1] as f32 / 255.0,
+                b: text_color[2] as f32 / 255.0,
+                a: 0.70,
+            });
+            self.brush_glow.SetColor(&D2D1_COLOR_F {
+                r: outline_color[0] as f32 / 255.0,
+                g: outline_color[1] as f32 / 255.0,
+                b: outline_color[2] as f32 / 255.0,
+                a: 0.90,
+            });
+        }
+        self.outline_width = outline_width;
+    }
+
+    /// Set the global overlay opacity (0–100 → 0–255 alpha). Applied on the next frame
+    /// through BLENDFUNCTION.SourceConstantAlpha, which multiplies the per-pixel alpha.
+    pub fn set_master_alpha(&mut self, percent: u8) {
+        let clamped = percent.clamp(0, 100);
+        self.master_alpha = ((clamped as u32 * 255) / 100) as u8;
+    }
+
+    /// Shows/hides the visualizer and sets its pulse scale (1.0 = full slot).
+    /// Called every frame; a no-op when the art failed to decode.
+    pub fn set_visualizer(&mut self, visible: bool, scale: f32) {
+        if let Some(vis) = self.visualizer.as_mut() {
+            vis.visible = visible;
+            vis.scale = scale;
+        }
+    }
+
+    /// Draws the visualizer art in place of the text, scaled by the pulse.
+    unsafe fn draw_visualizer(&self, text_align: TextAlign) {
+        let Some(vis) = self.visualizer.as_ref() else {
+            return;
+        };
+        if !vis.visible {
+            return;
+        }
+
+        let slot = (self.height as f32 - 20.0).clamp(60.0, 160.0);
+        let size = slot * vis.scale;
+        let centre_x = match text_align {
+            TextAlign::Left => 12.0 + slot / 2.0,
+            TextAlign::Center => self.width as f32 / 2.0,
+            TextAlign::Right => self.width as f32 - 12.0 - slot / 2.0,
+        };
+        let centre_y = 4.0 + slot / 2.0;
+        let dest = D2D_RECT_F {
+            left: centre_x - size / 2.0,
+            top: centre_y - size / 2.0,
+            right: centre_x + size / 2.0,
+            bottom: centre_y + size / 2.0,
+        };
+
+        let _ = self.render_target.DrawBitmap(
+            &vis.bitmap,
+            Some(&dest),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
+    }
+
+    /// Recreate the DIB/text formats at a new size or font size (tray "Text Size").
+    /// Cheap enough to do on a menu click; reuses the whole construction path.
+    pub unsafe fn rebuild(&mut self, config: &crate::config::AppConfig) {
+        if let Ok(mut fresh) = Self::new(
+            config.window_width,
+            config.window_height,
+            &config.font_family,
+            config.font_size_line1,
+            config.font_size_line2,
+            config.text_color,
+            config.outline_color,
+            config.outline_width,
+        ) {
+            fresh.master_alpha = self.master_alpha;
+            // Pulse state is per-frame UI state, not config: keep it across rebuilds
+            // (the bitmap itself is re-uploaded by `new`).
+            if let (Some(new_vis), Some(old_vis)) = (fresh.visualizer.as_mut(), self.visualizer.as_ref())
+            {
+                new_vis.scale = old_vis.scale;
+                new_vis.visible = old_vis.visible;
+            }
+            // Release the old DIB/DC before swapping; text formats are COM-managed.
+            let old = std::mem::replace(self, fresh);
+            drop(old);
+        }
+    }
+
     #[allow(dead_code)]
     pub unsafe fn render(
         &mut self,
@@ -346,6 +619,7 @@ impl OverlayRenderer {
                 y: 6.0,
                 opacity: 1.0,
                 is_active: true,
+                rotation_deg: 0.0,
             });
         }
         if !line2.is_empty() {
@@ -354,9 +628,10 @@ impl OverlayRenderer {
                 y: 48.0,
                 opacity: 0.70,
                 is_active: false,
+                rotation_deg: 0.0,
             });
         }
-        self.render_lines(hwnd, &lines, is_locked);
+        self.render_lines(hwnd, &lines, is_locked, TextAlign::Center);
     }
 }
 
@@ -377,11 +652,76 @@ mod tests {
     #[test]
     fn test_renderer_creation() {
         unsafe {
-            let res = OverlayRenderer::new(1000, 90, "Segoe UI", 24.0, 16.0);
+            let res = OverlayRenderer::new(1000, 90, "Segoe UI", 24.0, 16.0, [255, 255, 255], [0, 0, 0], 1.5);
             match res {
                 Ok(_) => println!("OverlayRenderer initialized successfully!"),
                 Err(e) => panic!("OverlayRenderer failed to initialize: {:?}", e),
             }
         }
+    }
+
+    /// Proves the visualizer actually paints into the layered DIB — bitmap upload,
+    /// premultiplied format and slot scaling in one shot. The render target is
+    /// bound to the renderer's own DIB, so no window is needed (the final
+    /// `UpdateLayeredWindow` fails on a null HWND, which is harmless).
+    #[test]
+    fn test_visualizer_paints_into_the_dib() {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            );
+        }
+
+        let mut renderer = match unsafe {
+            OverlayRenderer::new(600, 90, "Segoe UI", 24.0, 16.0, [255, 255, 255], [0, 0, 0], 1.5)
+        } {
+            Ok(r) => r,
+            Err(e) => panic!("renderer init failed: {:?}", e),
+        };
+        assert!(renderer.visualizer.is_some(), "embedded art must be uploaded");
+
+        fn painted_pixels(renderer: &OverlayRenderer) -> usize {
+            let len = renderer.width as usize * renderer.height as usize * 4;
+            let bits = unsafe { std::slice::from_raw_parts(renderer.bits, len) };
+            bits.chunks_exact(4).filter(|px| px[3] != 0).count()
+        }
+
+        let hwnd = HWND(std::ptr::null_mut());
+        let draw = |renderer: &mut OverlayRenderer, visible: bool, scale: f32| {
+            renderer.set_visualizer(visible, scale);
+            unsafe { renderer.render_lines(hwnd, &[], true, TextAlign::Center) };
+            painted_pixels(renderer)
+        };
+
+        assert_eq!(draw(&mut renderer, false, 1.0), 0, "hidden visualizer must not paint");
+
+        // On transparent vibe.gif, non-zero alpha pixels exist and scale dynamically.
+        // Slot is 74px on a 90px-tall surface, and the art is fully opaque.
+        let full = draw(&mut renderer, true, 1.0);
+        assert!(full > 500, "visualizer painted only {} pixels", full);
+        assert!(full > 1000, "visualizer painted only {} pixels", full);
+
+        // Halving the pulse scale must reduce the covered area.
+        let half = draw(&mut renderer, true, 0.5);
+        assert!(half < full, "scale ignored: {} px vs {} px", half, full);
+    }
+
+    /// The visualizer art is an embedded asset, so this must decode on any
+    /// Windows box — a failure here means the binary or the WIC path is broken.
+    #[test]
+    fn test_visualizer_asset_decodes_to_premultiplied_bgra() {
+        unsafe {
+            // WIC is COM; the app's UI thread is initialised by `main`, tests are not.
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            );
+        }
+
+        let (w, h, pixels) = vibe_art().expect("assets/vibe.png must decode");
+        assert!(*w > 0 && *h > 0);
+        assert_eq!(pixels.len(), (*w * *h * 4) as usize);
+        assert!(pixels.iter().any(|b| *b != 0), "decoded art is blank");
     }
 }

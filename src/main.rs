@@ -1,5 +1,6 @@
-// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod config;
 mod listener;
 mod lrclib;
@@ -48,9 +49,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (fetch_tx, fetch_rx) = channel::<LrcFetchRequest>();
 
     // Start Tuna HTTP Server on port (default 1608)
-    if let Err(e) = TunaServer::start(tuna_tx, config.tuna_port) {
+    if let Err(e) = TunaServer::start(tuna_tx.clone(), config.tuna_port) {
         eprintln!("[LyricReme] Warning: {}", e);
         eprintln!("[LyricReme] If port 1608 is already in use, verify if another instance is running.");
+    }
+
+    // Start Windows System Media listener (GSMTC) for Spotify, Chrome/Edge/Firefox YouTube, Apple Music, etc.
+    if let Err(e) = crate::listener::GsmtcListener::start(tuna_tx.clone()) {
+        eprintln!("[LyricReme] Warning (GSMTC): {}", e);
     }
 
     // Spawn LRCLIB worker thread
@@ -86,6 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.update_from_tuna(update, &fetch_tx_for_tuna);
             }
         })?;
+
+    // Spawn the WASAPI loopback level meter that drives the visualizer pulse.
+    if let Err(e) = audio::spawn_level_capture(Arc::clone(&player_state)) {
+        eprintln!("[LyricReme] Warning: {}", e);
+    }
 
     println!("[LyricReme] Launching Overlay Window...");
     let ui_res = OverlayWindow::run(config, Arc::clone(&player_state));

@@ -1,92 +1,90 @@
-# LyricReme (Crème Lyric)
+<div align="center">
 
-An ultra-low-resource, high-performance desktop lyrics overlay for Windows. Designed specifically for **[Pear Desktop](https://github.com/pear-devs/pear-desktop)** (YouTube Music) with synchronized timed lyrics powered by **[LRCLIB](https://lrclib.net/)**.
+  <img src="assets/logo.png" alt="LyricReme Logo" width="140" />
+
+  # LyricReme
+
+  A lightweight, borderless desktop lyrics overlay for Windows with a music-reactive visualizer.
+
+  [![Release](https://img.shields.io/github/v/release/asheohto/lyricreme?style=for-the-badge&logo=github&color=BC96E6)](https://github.com/asheohto/lyricreme/releases/latest)
+  [![License](https://img.shields.io/badge/License-MIT-2ecc71?style=for-the-badge)](LICENSE)
+  [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-omoretti-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/omoretti)
+
+</div>
 
 ---
 
-## ✨ Features
+## ✨ What it does
 
-- **Borderless & Transparent**: Floats cleanly at the top of your screen with zero background box or ugly borders.
-- **Two-Line Display**:
-  - **Top line**: Current active lyric in crisp bold text with drop shadows for high legibility over games, browsers, or dark/light wallpapers.
-  - **Bottom line**: Upcoming lyric preview in subtle semi-transparent text.
-- **Click-Through Transparency (`WS_EX_TRANSPARENT`)**: All mouse clicks pass directly through to windows, games, and browser tabs underneath.
-- **Draggable Repositioning**: Right-click the system tray icon to unlock and freely drag the overlay anywhere on your screen.
-- **Ultra-Low Memory Footprint**: Built with **Rust + Win32 + Direct2D/DirectWrite**. Uses negligible CPU (<0.1%) and compiles down to a single self-contained ~2.7 MB `.exe`.
-- **LRCLIB Integration**: Automatically queries synchronized `.lrc` lyrics from LRCLIB and caches them locally in `%LOCALAPPDATA%\LyricReme\cache\`.
-- **Nudge Timing**: On-the-fly timing delay adjustment (`+0.2s` / `-0.2s`) directly from the system tray menu.
+- ✅ **Borderless & Transparent**: Floats cleanly at the top of your screen with per-pixel alpha and zero background box.
+- ✅ **Music-Reactive Visualizer**: Pulses dynamically to WASAPI loopback audio loudness when lyrics are not found.
+- ✅ **Synchronized Timed Lyrics**: Fetches `.lrc` lyrics from [LRCLIB](https://lrclib.net/) and auto-caches them locally.
+- ✅ **Two-Line Dynamic Layout**: Active line with crisp drop-shadow legibility plus upcoming preview line with directional spring sliding.
+- ✅ **Click-Through Transparency (`WS_EX_TRANSPARENT`)**: Mouse clicks pass through cleanly to underlying games and apps.
+- ✅ **System Tray Controls**: Adjust text size, font color, outline thickness, opacity, screen anchor, and timing nudge (`±0.2s`).
+- ✅ **Ultra-Low Overhead**: Native Win32 + Direct2D/DirectWrite in Rust (<0.1% CPU, ~60MB RAM, zero webview bloat).
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Enable Tuna OBS in Pear Desktop
+### 1. Enable Tuna in Pear Desktop
 
-1. Open **Pear Desktop**.
-2. Click the gear icon or navigate to **Settings** -> **Plugins**.
-3. Locate **Tuna OBS** and toggle it **ON**.
-4. *(Optional)* If prompted to restart Pear Desktop, restart it.
-
-> Pear Desktop's Tuna OBS plugin automatically pushes millisecond-accurate track updates to `http://127.0.0.1:1608/` on track changes, play/pause, and seeking.
-
----
+1. Open **[Pear Desktop](https://github.com/pear-devs/pear-desktop)** (YouTube Music).
+2. Go to **Settings** -> **Plugins**.
+3. Toggle **Tuna OBS** to **ON** (broadcasts track info to `127.0.0.1:1608`).
 
 ### 2. Run LyricReme
 
-#### From Prebuilt Release:
-Run `target\release\lyricreme.exe` or compile it yourself:
+1. Download the latest **`lyricreme.exe`** from [**Releases**](https://github.com/asheohto/lyricreme/releases/latest).
+2. Run `lyricreme.exe`.
+3. Play music — lyrics synchronize automatically!
+
+---
+
+## 🛠️ Building from Source (Developers)
+
+Requires Windows 10/11 and Rust (MSVC toolchain):
 
 ```powershell
+# Clone the repository
+git clone https://github.com/asheohto/lyricreme.git
+cd lyricreme
+
+# Build release binary
 cargo build --release
+
+# Run
 .\target\release\lyricreme.exe
 ```
 
-When started, LyricReme will float at the top center of your main monitor. Play any track in Pear Desktop, and the lyrics will automatically fetch and start scrolling in sync!
+---
+
+## ⚙️ System Tray Menu
+
+Right-click the **LyricReme** tray icon near your clock:
+
+| Option | Description |
+| :--- | :--- |
+| **Position** | Snap to 9 screen anchors (Top Center, Top Left, Bottom Center, etc.) |
+| **Text Size** | Switch font sizes from Small to Huge with auto-scaled window bounds |
+| **Text Color** | Pick presets (White, Black, Cream, Sky, Pink, Mint, Gold) |
+| **Outline** | Adjust drop-shadow stroke (None, Thin, Medium, Thick) |
+| **Opacity** | Set overlay master transparency (40%, 60%, 80%, 100%) |
+| **Music Visualizer** | Toggle music-reactive beat pulse when lyrics are not found |
+| **Click-Through** | Enable or disable click transparency |
+| **Lock Position** | Unlock to drag and freely reposition the overlay anywhere |
+| **Nudge Timing** | Lead/lag offset adjustments (`+0.2s` / `-0.2s` / Reset) |
 
 ---
 
-## ⚙️ Controls & System Tray Menu
+## 📜 License
 
-Look for the **LyricReme** icon in your Windows notification tray (bottom-right near your clock):
-
-- **Click-Through (Transparent clicks)**: Toggle whether mouse clicks pass through the overlay.
-- **Lock Position (Drag to move)**: Uncheck this to temporarily enable window dragging so you can position the overlay wherever you like.
-- **Reset to Top Center**: Returns the overlay to the default top-center position.
-- **Nudge Forward (+0.2s) / Nudge Backward (-0.2s)**: Adjust lyric lead/lag time.
-- **Reset Offset (0.0s)**: Resets sync offset to zero.
-- **Exit LyricReme**: Closes the application.
+MIT – see the [LICENSE](LICENSE) file.
 
 ---
 
-## 🛠️ Configuration
+## 📧 Contact & Support
 
-Configuration is automatically saved to:
-```
-%APPDATA%\LyricReme\config.json
-```
-
-Example `config.json`:
-```json
-{
-  "window_x": null,
-  "window_y": 20,
-  "window_width": 1100,
-  "window_height": 80,
-  "font_family": "Segoe UI",
-  "font_size_line1": 24.0,
-  "font_size_line2": 16.0,
-  "click_through": true,
-  "time_offset_ms": 0,
-  "tuna_port": 1608
-}
-```
-
----
-
-## 🧪 Running Tests
-
-To verify LRC parsing, timestamp calculation, and metadata filtering:
-
-```powershell
-cargo test
-```
+- GitHub Issues: https://github.com/asheohto/lyricreme/issues
+- Support / Donate: https://ko-fi.com/omoretti

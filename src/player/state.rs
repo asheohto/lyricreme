@@ -28,6 +28,10 @@ pub struct PlayerState {
     pub last_update: Option<Instant>,
     pub parsed_lrc: Option<ParsedLrc>,
     pub lyrics_status: LyricsStatus,
+    /// Normalised 0.0–1.0 loudness of the system audio mix, published by the
+    /// WASAPI loopback capture thread (`audio` module) and read by the UI to
+    /// drive the visualizer pulse. 0.0 = silence / capture unavailable.
+    pub audio_level: f32,
 }
 
 impl Default for PlayerState {
@@ -41,6 +45,7 @@ impl Default for PlayerState {
             last_update: None,
             parsed_lrc: None,
             lyrics_status: LyricsStatus::Idle,
+            audio_level: 0.0,
         }
     }
 }
@@ -134,8 +139,8 @@ impl PlayerState {
                 "Fetching timed lyrics from LRCLIB...".to_string(),
             ),
             LyricsStatus::NotFound => (
-                format!("{} - {}", self.current_track, self.current_artist),
-                "(No synced lyrics found on LRCLIB)".to_string(),
+                String::new(),
+                String::new(),
             ),
             LyricsStatus::Loaded => {
                 if let Some(ref lrc) = self.parsed_lrc {
