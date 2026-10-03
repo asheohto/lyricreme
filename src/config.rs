@@ -96,10 +96,12 @@ pub struct AppConfig {
     /// Outline thickness in px (0 = no outline, max 6).
     #[serde(default = "default_outline_width")]
     pub outline_width: f32,
-    /// Music-reactive visualizer art (`assets/vibe.gif`) next to the lyrics.
     /// Music-reactive visualizer art (`assets/vibe.png`) next to the lyrics.
     #[serde(default = "default_visualizer")]
     pub visualizer: bool,
+    /// Display Japanese lyrics in Hiragana reading.
+    #[serde(default)]
+    pub show_hiragana: bool,
 }
 
 fn default_window_alpha() -> u8 { 100 }
@@ -138,6 +140,7 @@ impl Default for AppConfig {
             outline_color: [0, 0, 0],
             outline_width: 1.5,
             visualizer: true,
+            show_hiragana: false,
         }
     }
 }
@@ -210,6 +213,7 @@ mod tests {
         assert_eq!(cfg.outline_color, [0, 0, 0]);
         assert_eq!(cfg.outline_width, 1.5);
         assert!(cfg.visualizer);
+        assert!(!cfg.show_hiragana);
         assert_eq!(cfg.time_offset_ms, 800);
         assert_eq!(cfg.position, LyricsPosition::TopCenter);
     }
@@ -222,6 +226,7 @@ mod tests {
         cfg.text_color = COLOR_PRESETS[4].1;
         cfg.outline_width = 3.5;
         cfg.font_size_line1 = 30.0;
+        cfg.show_hiragana = true;
 
         let json = serde_json::to_string(&cfg).unwrap();
         let back: AppConfig = serde_json::from_str(&json).unwrap();
@@ -229,5 +234,6 @@ mod tests {
         assert_eq!(back.text_color, COLOR_PRESETS[4].1);
         assert_eq!(back.outline_width, 3.5);
         assert_eq!(back.font_size_line1, 30.0);
+        assert!(back.show_hiragana);
     }
 }

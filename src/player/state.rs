@@ -27,6 +27,7 @@ pub struct PlayerState {
     pub reported_progress_ms: u64,
     pub last_update: Option<Instant>,
     pub parsed_lrc: Option<ParsedLrc>,
+    pub parsed_hiragana_lrc: Option<ParsedLrc>,
     pub lyrics_status: LyricsStatus,
     /// Normalised 0.0–1.0 loudness of the system audio mix, published by the
     /// WASAPI loopback capture thread (`audio` module) and read by the UI to
@@ -44,6 +45,7 @@ impl Default for PlayerState {
             reported_progress_ms: 0,
             last_update: None,
             parsed_lrc: None,
+            parsed_hiragana_lrc: None,
             lyrics_status: LyricsStatus::Idle,
             audio_level: 0.0,
         }
@@ -67,6 +69,7 @@ impl PlayerState {
 
         if track_changed {
             self.parsed_lrc = None;
+            self.parsed_hiragana_lrc = None;
             self.lyrics_status = LyricsStatus::Loading;
 
             let duration_sec = if update.duration_ms > 0 {
@@ -99,6 +102,17 @@ impl PlayerState {
         }
     }
 
+    pub fn set_hiragana_lyrics(&mut self, lrc_text: Option<String>) {
+        if let Some(text) = lrc_text {
+            let parsed = ParsedLrc::parse(&text);
+            if !parsed.lines.is_empty() {
+                self.parsed_hiragana_lrc = Some(parsed);
+            }
+        } else {
+            self.parsed_hiragana_lrc = None;
+        }
+    }
+
     pub fn current_position_ms(&self, offset_ms: i64) -> u64 {
         let base_pos = self.reported_progress_ms;
 
@@ -125,7 +139,7 @@ impl PlayerState {
         clamped
     }
 
-    pub fn get_display_lyrics(&self, offset_ms: i64) -> (String, String) {
+    pub fn get_display_lyrics(&self, offset_ms: i64, show_hiragana: bool) -> (String, String) {
         if self.current_track.is_empty() {
             return (
                 "LyricReme — Waiting for Pear Desktop...".to_string(),
@@ -143,7 +157,13 @@ impl PlayerState {
                 String::new(),
             ),
             LyricsStatus::Loaded => {
-                if let Some(ref lrc) = self.parsed_lrc {
+                let lrc_ref = if show_hiragana {
+                    self.parsed_hiragana_lrc.as_ref().or(self.parsed_lrc.as_ref())
+                } else {
+                    self.parsed_lrc.as_ref()
+                };
+
+                if let Some(lrc) = lrc_ref {
                     let pos = self.current_position_ms(offset_ms);
                     let (curr, next) = lrc.get_current_and_next(pos);
 

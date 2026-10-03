@@ -76,7 +76,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut state = player_state_for_lrc.lock().unwrap();
                 // Ensure lyrics belong to the current song
                 if state.current_track == req.title {
-                    state.set_lyrics(lyrics);
+                    state.set_lyrics(lyrics.clone());
+                }
+                drop(state);
+
+                // If lyrics were found and contain Japanese, fetch/convert Hiragana in background
+                if let Some(ref lrc_text) = lyrics {
+                    if crate::lrclib::hiragana::contains_japanese(lrc_text) {
+                        println!("[LyricReme] Japanese lyrics detected for '{}', processing Hiragana...", req.title);
+                        let hira_lyrics = client.get_hiragana_lyrics(&req.artist, &req.title, lrc_text);
+                        if hira_lyrics.is_some() {
+                            println!("[LyricReme] Successfully loaded Hiragana lyrics for '{}'", req.title);
+                        }
+                        let mut state = player_state_for_lrc.lock().unwrap();
+                        if state.current_track == req.title {
+                            state.set_hiragana_lyrics(hira_lyrics);
+                        }
+                    }
                 }
             }
         })?;
