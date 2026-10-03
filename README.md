@@ -2,7 +2,7 @@
 
   <img src="assets/logo.png" alt="LyricReme Logo" width="140" />
 
-  # LyricReme
+  # Lyricreme
 
   Desktop lyrics overlay for Windows with a music-reactive visualizer.
 
