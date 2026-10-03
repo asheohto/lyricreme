@@ -48,6 +48,7 @@ When a track has no timed lyrics available, it displays a music-reactive visuali
 1. Open Pear Desktop.
 2. Go to Settings -> Plugins.
 3. Turn on Tuna OBS (sends track updates to `127.0.0.1:1608`).
+<img width="274" height="206" alt="image" src="https://github.com/user-attachments/assets/dd7f6b55-7814-417e-b561-f96377003686" />
 
 ### 2. Run LyricReme
 
