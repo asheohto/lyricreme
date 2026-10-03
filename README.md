@@ -34,6 +34,13 @@ When a track has no timed lyrics available, it displays a music-reactive visuali
 
 ---
 
+## Preview
+<img width="1919" height="1033" alt="image" src="https://github.com/user-attachments/assets/89f37bbd-e4ed-48d8-b8ee-434e0f6a63b7" />
+<img width="1919" height="1033" alt="image" src="https://github.com/user-attachments/assets/4aae80a3-a7f9-4b6c-b6ce-a11fa16b9670" />
+<img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/967b75ff-3125-4545-bae5-bf6850add03d" />
+
+---
+
 ## Getting Started
 
 ### 1. Enable Tuna in Pear Desktop
